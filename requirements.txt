@@ -1,0 +1,11 @@
+astc_encoder_py
+chardet
+etcpak
+mmh3
+Pillow
+pyswizzle
+soundfile
+texture2ddecoder
+zstd
+PyQt6
+win11toast
