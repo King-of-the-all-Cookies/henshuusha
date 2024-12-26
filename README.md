@@ -1,6 +1,7 @@
 #### Русский
 
-# ![icon](https://github.com/user-attachments/assets/e65fe2bf-36f2-46ac-a257-33a6af85443c)Henshuusha — это приложение для работы с файлами PAK и скриптами, используемое для распаковки, кодирования и декодирования различных форматов файлов.
+# ![icon](https://github.com/user-attachments/assets/e65fe2bf-36f2-46ac-a257-33a6af85443c)Henshuusha — это приложение для работы с файлами и модификации серии игр Ace Attorney (Gyakuten Saiban). 
+
 
 ## Установка
 
@@ -18,7 +19,7 @@ pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile textu
 
 #### English
 
-# ![icon](https://github.com/user-attachments/assets/e65fe2bf-36f2-46ac-a257-33a6af85443c)Henshuusha is an application for working with PAK files and scripts, used for unpacking, encoding, and decoding various file formats.
+# ![icon](https://github.com/user-attachments/assets/e65fe2bf-36f2-46ac-a257-33a6af85443c)Henshuusha is an application for working with files and modifying the Ace Attorney (Gyakuten Saiban) game series.
 
 ## Installation
 
