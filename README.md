@@ -16,7 +16,7 @@ pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile textu
 
 ```
 
-#### Английский
+#### English
 
 # ![icon](https://github.com/user-attachments/assets/e65fe2bf-36f2-46ac-a257-33a6af85443c)Henshuusha is an application for working with PAK files and scripts, used for unpacking, encoding, and decoding various file formats.
 
