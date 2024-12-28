@@ -81,6 +81,37 @@ class PlatformDialog(QDialog):
         self.selected_platform = self.platform_combo.currentText()
         super().accept()
 
+class GameSelectionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Game")
+        self.selected_game = None
+
+        layout = QVBoxLayout()
+
+        self.game_label = QLabel("Select Game:")
+        layout.addWidget(self.game_label)
+
+        self.game_combo = QComboBox()
+        self.game_combo.addItems([
+            "1 - original phoenix wright",
+            "2 - justice for all",
+            "3 - trials and tribulations",
+            "4 - apollo justice",
+            "5 - Gyakuten Saiban 1 (GBA)"
+        ])
+        layout.addWidget(self.game_combo)
+
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        layout.addWidget(self.ok_button)
+
+        self.setLayout(layout)
+
+    def accept(self):
+        self.selected_game = self.game_combo.currentIndex() + 1
+        super().accept()
+
 class MainWindow(QMainWindow):
     request_platform_and_unpack = pyqtSignal(Path)
 
@@ -97,6 +128,17 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu('File')
 
         open_menu = file_menu.addMenu('Open')
+        ds_menu = open_menu.addMenu('DS')
+        gs1234_menu = ds_menu.addMenu('GS1234')
+
+        extract_mes_action = QAction('mes_all.bin', self)
+        extract_mes_action.triggered.connect(self.extract_mes_all_bin)
+        gs1234_menu.addAction(extract_mes_action)
+
+        convert_text_action = QAction('Script Converter', self)
+        convert_text_action.triggered.connect(self.convert_text_messages)
+        gs1234_menu.addAction(convert_text_action)
+
         ajt_menu = open_menu.addMenu('AJT')
         pak_menu = ajt_menu.addMenu('PAK')
 
@@ -156,6 +198,17 @@ class MainWindow(QMainWindow):
         self.close_button.setVisible(False)
 
         self.request_platform_and_unpack.connect(self.select_platform_and_unpack)
+
+        # Загрузите DLL
+        extract_mes_dll_path = os.path.join(os.path.dirname(__file__), 'req', 'DS', 'extract_mes_all_bin.dll')
+        self.extract_mes_all_bin = ctypes.CDLL(extract_mes_dll_path)
+        self.extract_mes_all_bin.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+        self.extract_mes_all_bin.main.restype = ctypes.c_int
+
+        convert_text_dll_path = os.path.join(os.path.dirname(__file__), 'req', 'DS', 'convert_text_messages.dll')
+        self.convert_text_messages = ctypes.CDLL(convert_text_dll_path)
+        self.convert_text_messages.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+        self.convert_text_messages.main.restype = ctypes.c_int
 
     def show_error_message(self, message):
         logging.error(f"Error message: {message}")
@@ -449,6 +502,87 @@ class MainWindow(QMainWindow):
         self.text_edit.setVisible(False)
         self.copy_path_button.setVisible(False)
         self.close_button.setVisible(False)
+
+    def extract_mes_all_bin(self):
+        try:
+            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+            logging.info("Extracting mes_all.bin")
+            options = QFileDialog.Option.ReadOnly
+            file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", "BIN Files (*.bin)", options=options)
+            if file_name:
+                logging.info(f"Selected file: {file_name}")
+
+                # Получите директорию, где находится файл mes_all.bin
+                file_dir = os.path.dirname(file_name)
+
+                # Вызов C-кода
+                argc = 3
+                argv = (ctypes.c_char_p * argc)()
+                argv[0] = b"extract_mes_all_bin"
+                argv[1] = file_name.encode('utf-8')
+                argv[2] = file_dir.encode('utf-8')
+
+                self.worker_thread = WorkerThread(lambda: self.extract_mes_all_bin.main(argc, argv))
+                self.worker_thread.signals.finished.connect(self.handle_extract_finished)
+                self.worker_thread.signals.error.connect(self.handle_extract_error)
+                self.worker_thread.start()
+        except Exception as e:
+            logging.error(f"Error extracting mes_all.bin: {e}")
+            self.show_error_message(f"An error occurred: {e}")
+            traceback.print_exc()
+
+    def handle_extract_finished(self):
+        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+        logging.info("Extract finished")
+        toast("Extract Finished", "The extraction process has been completed successfully.")
+
+    def handle_extract_error(self, error):
+        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+        e, traceback_str = error
+        logging.error(f"Extract error: {e}\n{traceback_str}")
+        self.show_error_message(f"An error occurred: {e}")
+
+    def convert_text_messages(self):
+        try:
+            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+            logging.info("Converting text messages")
+            options = QFileDialog.Option.ShowDirsOnly
+            dir_name = QFileDialog.getExistingDirectory(self, "Select Directory with Scripts", options=options)
+            if dir_name:
+                logging.info(f"Selected directory: {dir_name}")
+
+                # Вызов диалога выбора игры
+                game_dialog = GameSelectionDialog(self)
+                if game_dialog.exec() == QDialog.DialogCode.Accepted:
+                    selected_game = game_dialog.selected_game
+                    logging.info(f"Selected game: {selected_game}")
+
+                    # Вызов C-кода
+                    argc = 3
+                    argv = (ctypes.c_char_p * argc)()
+                    argv[0] = b"convert_text_messages"
+                    argv[1] = dir_name.encode('utf-8')
+                    argv[2] = str(selected_game).encode('utf-8')
+
+                    self.worker_thread = WorkerThread(lambda: self.convert_text_messages.main(argc, argv))
+                    self.worker_thread.signals.finished.connect(self.handle_convert_finished)
+                    self.worker_thread.signals.error.connect(self.handle_convert_error)
+                    self.worker_thread.start()
+        except Exception as e:
+            logging.error(f"Error converting text messages: {e}")
+            self.show_error_message(f"An error occurred: {e}")
+            traceback.print_exc()
+
+    def handle_convert_finished(self):
+        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+        logging.info("Convert finished")
+        toast("Convert Finished", "The conversion process has been completed successfully.")
+
+    def handle_convert_error(self, error):
+        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+        e, traceback_str = error
+        logging.error(f"Convert error: {e}\n{traceback_str}")
+        self.show_error_message(f"An error occurred: {e}")
 
 def set_taskbar_icon(icon_path):
     # Устанавливаем иконку для приложения в панели задач
