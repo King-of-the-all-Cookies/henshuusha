@@ -5,9 +5,9 @@ import logging
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QMenuBar, QMenu, QFileDialog,
-    QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox, QTextEdit, QHBoxLayout, QWidget
+    QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox, QTextEdit, QHBoxLayout, QWidget, QListWidget, QStackedWidget
 )
-from PyQt6.QtGui import QIcon, QAction, QClipboard
+from PyQt6.QtGui import QIcon, QAction, QClipboard, QPixmap
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 from pathlib import Path
 from win11toast import toast
@@ -146,6 +146,11 @@ class MainWindow(QMainWindow):
         unpack_action.triggered.connect(self.unpack_pak)
         pak_menu.addAction(unpack_action)
 
+        tex_menu = ajt_menu.addMenu('TEX')
+        convert_to_image_action = QAction('Convert to DDS/PNG', self)
+        convert_to_image_action.triggered.connect(self.convert_tex_to_image)
+        tex_menu.addAction(convert_to_image_action)
+
         script_menu = ajt_menu.addMenu('Script')
         gs56_decode_action = QAction('GS56 Decode', self)
         gs56_decode_action.triggered.connect(self.decode_gs56_script)
@@ -162,6 +167,11 @@ class MainWindow(QMainWindow):
         create_pak_action = QAction('Create PAK', self)
         create_pak_action.triggered.connect(self.create_pak)
         save_pak_menu.addAction(create_pak_action)
+
+        save_tex_menu = save_ajt_menu.addMenu('TEX')
+        convert_to_tex_action = QAction('Convert to TEX', self)
+        convert_to_tex_action.triggered.connect(self.convert_image_to_tex)
+        save_tex_menu.addAction(convert_to_tex_action)
 
         save_script_menu = save_ajt_menu.addMenu('Script')
         gs56_encode_action = QAction('GS56 Encode', self)
@@ -181,13 +191,27 @@ class MainWindow(QMainWindow):
         self.close_button = QPushButton("Close", self)
         self.close_button.clicked.connect(self.close_text_edit)
 
+        self.file_list_widget = QListWidget(self)
+        self.file_list_widget.itemClicked.connect(self.display_file_content)
+
+        self.stacked_widget = QStackedWidget(self)
+        self.stacked_widget.addWidget(self.text_edit)
+
+        self.image_label = QLabel(self)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stacked_widget.addWidget(self.image_label)
+
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.copy_path_button)
         button_layout.addWidget(self.close_button)
 
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.text_edit)
-        main_layout.addLayout(button_layout)
+        main_layout = QHBoxLayout()
+        main_layout.addWidget(self.file_list_widget, stretch=1)
+        main_layout.addWidget(self.stacked_widget, stretch=3)
+
+        button_container = QWidget()
+        button_container.setLayout(button_layout)
+        main_layout.addWidget(button_container)
 
         container = QWidget()
         container.setLayout(main_layout)
@@ -196,10 +220,10 @@ class MainWindow(QMainWindow):
         self.text_edit.setVisible(False)
         self.copy_path_button.setVisible(False)
         self.close_button.setVisible(False)
+        self.file_list_widget.setVisible(False)
 
         self.request_platform_and_unpack.connect(self.select_platform_and_unpack)
 
-        # Загрузите DLL
         extract_mes_dll_path = os.path.join(os.path.dirname(__file__), 'req', 'DS', 'extract_mes_all_bin.dll')
         self.extract_mes_all_bin = ctypes.CDLL(extract_mes_dll_path)
         self.extract_mes_all_bin.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
@@ -209,6 +233,20 @@ class MainWindow(QMainWindow):
         self.convert_text_messages = ctypes.CDLL(convert_text_dll_path)
         self.convert_text_messages.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
         self.convert_text_messages.main.restype = ctypes.c_int
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.scale_image_to_label()
+
+    def scale_image_to_label(self):
+        if self.image_label.pixmap():
+            pixmap = self.image_label.pixmap()
+            scaled_pixmap = pixmap.scaled(
+                self.image_label.size() * 0.9,  # 90% от размера QLabel
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
 
     def show_error_message(self, message):
         logging.error(f"Error message: {message}")
@@ -502,6 +540,8 @@ class MainWindow(QMainWindow):
         self.text_edit.setVisible(False)
         self.copy_path_button.setVisible(False)
         self.close_button.setVisible(False)
+        self.file_list_widget.setVisible(False)
+        self.stacked_widget.setCurrentIndex(0)
 
     def extract_mes_all_bin(self):
         try:
@@ -512,10 +552,8 @@ class MainWindow(QMainWindow):
             if file_name:
                 logging.info(f"Selected file: {file_name}")
 
-                # Получите директорию, где находится файл mes_all.bin
                 file_dir = os.path.dirname(file_name)
 
-                # Вызов C-кода
                 argc = 3
                 argv = (ctypes.c_char_p * argc)()
                 argv[0] = b"extract_mes_all_bin"
@@ -551,13 +589,11 @@ class MainWindow(QMainWindow):
             if dir_name:
                 logging.info(f"Selected directory: {dir_name}")
 
-                # Вызов диалога выбора игры
                 game_dialog = GameSelectionDialog(self)
                 if game_dialog.exec() == QDialog.DialogCode.Accepted:
                     selected_game = game_dialog.selected_game
                     logging.info(f"Selected game: {selected_game}")
 
-                    # Вызов C-кода
                     argc = 3
                     argv = (ctypes.c_char_p * argc)()
                     argv[0] = b"convert_text_messages"
@@ -584,8 +620,114 @@ class MainWindow(QMainWindow):
         logging.error(f"Convert error: {e}\n{traceback_str}")
         self.show_error_message(f"An error occurred: {e}")
 
+    def convert_tex_to_image(self):
+        options = QFileDialog.Option.ReadOnly
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Open TEX Files", "", "TEX Files (*.tex.*)", options=options)
+        if file_names:
+            format_dialog = QDialog(self)
+            format_dialog.setWindowTitle("Select Output Format")
+            layout = QVBoxLayout()
+
+            format_label = QLabel("Select Format:")
+            layout.addWidget(format_label)
+
+            format_combo = QComboBox()
+            format_combo.addItems(["PNG", "DDS"])
+            layout.addWidget(format_combo)
+
+            ok_button = QPushButton("OK")
+            ok_button.clicked.connect(format_dialog.accept)
+            layout.addWidget(ok_button)
+
+            format_dialog.setLayout(layout)
+
+            if format_dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_format = format_combo.currentText().lower()
+                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+                if output_dir:
+                    self.worker_thread = WorkerThread(self._convert_tex_to_image_worker, file_names, selected_format, output_dir)
+                    self.worker_thread.signals.result.connect(self.handle_convert_tex_result)
+                    self.worker_thread.signals.finished.connect(self.handle_convert_finished)
+                    self.worker_thread.signals.error.connect(self.handle_convert_error)
+                    self.worker_thread.start()
+
+    def _convert_tex_to_image_worker(self, file_names, selected_format, output_dir):
+        from req.AJTTools.plugins.tex import Tex
+        results = []
+        for file_name in file_names:
+            tex = Tex(file_name)
+            output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(file_name))[0]}.{selected_format}")
+            tex.export_file(output_file)
+            results.append(output_file)
+        return results
+
+    def handle_convert_tex_result(self, result):
+        if result:
+            if len(result) == 1:
+                self.display_single_file(result[0])
+            else:
+                self.display_multiple_files(result)
+
+    def display_single_file(self, file_path):
+        if file_path.endswith('.png') or file_path.endswith('.dds'):
+            pixmap = QPixmap(file_path)
+            self.image_label.setPixmap(pixmap)
+            self.scale_image_to_label()
+            self.stacked_widget.setCurrentWidget(self.image_label)
+        else:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            self.text_edit.setPlainText(content)
+            self.stacked_widget.setCurrentWidget(self.text_edit)
+
+        self.text_edit.setVisible(True)
+        self.copy_path_button.setVisible(True)
+        self.close_button.setVisible(True)
+
+    def display_multiple_files(self, file_paths):
+        self.file_list_widget.clear()
+        self.file_list_widget.addItems(file_paths)
+        self.file_list_widget.setVisible(True)
+        self.file_list_widget.setCurrentRow(0)
+
+    def display_file_content(self, item):
+        file_path = item.text()
+        if file_path.endswith('.png') or file_path.endswith('.dds'):
+            pixmap = QPixmap(file_path)
+            self.image_label.setPixmap(pixmap)
+            self.scale_image_to_label()
+            self.stacked_widget.setCurrentWidget(self.image_label)
+        else:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            self.text_edit.setPlainText(content)
+            self.stacked_widget.setCurrentWidget(self.text_edit)
+
+    def convert_image_to_tex(self):
+        options = QFileDialog.Option.ReadOnly
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Image Files", "", "Image Files (*.png *.dds)", options=options)
+        if file_names:
+            output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            if output_dir:
+                self.worker_thread = WorkerThread(self._convert_image_to_tex_worker, file_names, output_dir)
+                self.worker_thread.signals.finished.connect(self.handle_convert_finished)
+                self.worker_thread.signals.error.connect(self.handle_convert_error)
+                self.worker_thread.start()
+
+    def _convert_image_to_tex_worker(self, file_names, output_dir):
+        from req.AJTTools.plugins.tex import Tex
+        results = []
+        for file_name in file_names:
+            base_name = os.path.basename(file_name)
+            tex_name = base_name.replace('.png', '.tex.35').replace('.dds', '.tex.35')
+            output_file = os.path.join(output_dir, tex_name)
+            tex = Tex(output_file)
+            tex.import_file(file_name)
+            tex.save(output_file)
+            results.append(output_file)
+        return results
+
 def set_taskbar_icon(icon_path):
-    # Устанавливаем иконку для приложения в панели задач
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"mycompany.myproduct.subproduct.{icon_path}")
 
 def main():
