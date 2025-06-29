@@ -17,6 +17,11 @@ pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile textu
 
 ```
 
+### Скачать релиз
+
+https://github.com/King-of-the-all-Cookies/henshuusha/releases
+
+
 #### English
 
 # ![icon](https://github.com/user-attachments/assets/e65fe2bf-36f2-46ac-a257-33a6af85443c)Henshuusha is an application for working with files and modifying the Ace Attorney (Gyakuten Saiban) game series.
@@ -33,3 +38,7 @@ pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile textu
 ```sh
 pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile texture2ddecoder zstd PyQt6 win11toast
 ```
+
+### Download release
+
+https://github.com/King-of-the-all-Cookies/henshuusha/releases
