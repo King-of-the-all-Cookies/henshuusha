@@ -7,7 +7,7 @@
 
 ### Требования
 
-- Python 3.x
+- Python 3.x (Протестировано на Python 3.12)
 - Библиотеки: astc_encoder_py, chardet, etcpak, mmh3, Pillow, pyswizzle, soundfile, texture2ddecoder, zstd, PyQt6, win11toast
 
 ### Установка зависимостей
@@ -30,7 +30,7 @@ https://github.com/King-of-the-all-Cookies/henshuusha/releases
 
 ### Requirements
 
-- Python 3.x
+- Python 3.x (tested in Python 3.12)
 - Libraries: astc_encoder_py, chardet, etcpak, mmh3, Pillow, pyswizzle, soundfile, texture2ddecoder, zstd, PyQt6, win11toast
 
 ### Installing Dependencies
