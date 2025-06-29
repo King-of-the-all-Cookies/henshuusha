@@ -787,7 +787,7 @@ class MainWindow(QMainWindow):
 
     def convert_fonts_back(self, file_names, output):
         try:
-            from req.AJTTools.plugins.font import REFont
+            from req.AJTTools.plugins.font import REFont # Импортируем обработчик шрифтов
             if isinstance(output, str):  # Один файл
                 font = REFont(output)  # Создаем экземпляр REFont с пустым именем
                 font.import_file(file_names[0])
