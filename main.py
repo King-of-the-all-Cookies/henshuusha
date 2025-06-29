@@ -140,6 +140,13 @@ class MainWindow(QMainWindow):
         gs1234_menu.addAction(convert_text_action)
 
         ajt_menu = open_menu.addMenu('AJT')
+        font_menu = ajt_menu.addMenu('Font')
+
+        # Действие для конвертации из oft.1 в otf
+        oft_to_otf_action = QAction('oft.1 -> otf', self)
+        oft_to_otf_action.triggered.connect(self.convert_oft_to_otf)
+        font_menu.addAction(oft_to_otf_action)
+
         pak_menu = ajt_menu.addMenu('PAK')
 
         unpack_action = QAction('Unpack', self)
@@ -181,6 +188,14 @@ class MainWindow(QMainWindow):
         gs4_encode_action = QAction('GS4 Encode', self)
         gs4_encode_action.triggered.connect(self.encode_gs4_script)
         save_script_menu.addAction(gs4_encode_action)
+
+        # Действие для конвертации из otf в oft.1
+        save_ajt_menu = save_menu.addMenu('AJT')
+        font_save_menu = save_ajt_menu.addMenu('Font')
+
+        otf_to_oft_action = QAction('otf -> oft.1', self)
+        otf_to_oft_action.triggered.connect(self.convert_otf_to_oft)
+        font_save_menu.addAction(otf_to_oft_action)
 
         self.text_edit = QTextEdit(self)
         self.text_edit.setReadOnly(True)
@@ -726,6 +741,68 @@ class MainWindow(QMainWindow):
             tex.save(output_file)
             results.append(output_file)
         return results
+
+    def convert_oft_to_otf(self):
+        options = QFileDialog.Option.ReadOnly
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Select OFT.1 Font Files", "", "Font Files (*.oft.*)", options=options)
+        if file_names:
+            if len(file_names) == 1:
+                output_file, _ = QFileDialog.getSaveFileName(self, "Save OTF Font File", "", "OpenType Fonts (*.otf)")
+                if output_file:
+                    self.convert_fonts(file_names, output_file)
+            else:
+                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+                if output_dir:
+                    self.convert_fonts(file_names, output_dir)
+
+    def convert_otf_to_oft(self):
+        options = QFileDialog.Option.ReadOnly
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Select OTF Font Files", "", "OpenType Fonts (*.otf)", options=options)
+        if file_names:
+            if len(file_names) == 1:
+                output_file, _ = QFileDialog.getSaveFileName(self, "Save OFT.1 Font File", "", "Font Files (*.oft.1)")
+                if output_file:
+                    self.convert_fonts_back(file_names, output_file)
+            else:
+                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+                if output_dir:
+                    self.convert_fonts_back(file_names, output_dir)
+
+    def convert_fonts(self, file_names, output):
+        try:
+            from req.AJTTools.plugins.font import REFont
+            if isinstance(output, str):  # Один файл
+                font = REFont(file_names[0])
+                font.export_file(output)
+                QMessageBox.information(self, "Success", "Font conversion completed successfully!")
+            else:  # Несколько файлов
+                for file_name in file_names:
+                    font = REFont(file_name)
+                    base_name = os.path.basename(file_name).replace('.oft.', '.otf')
+                    output_file = os.path.join(output, base_name)
+                    font.export_file(output_file)
+                QMessageBox.information(self, "Success", "All font conversions completed successfully!")
+        except Exception as e:
+            self.show_error_message(f"An error occurred: {e}")
+
+    def convert_fonts_back(self, file_names, output):
+        try:
+            from req.AJTTools.plugins.font import REFont
+            if isinstance(output, str):  # Один файл
+                font = REFont(output)  # Создаем экземпляр REFont с пустым именем
+                font.import_file(file_names[0])
+                font.save(output)
+                QMessageBox.information(self, "Success", "Font conversion completed successfully!")
+            else:  # Несколько файлов
+                for file_name in file_names:
+                    base_name = os.path.basename(file_name).replace('.otf', '.oft.1')
+                    output_file = os.path.join(output, base_name)
+                    font = REFont(output_file)  # Создаем экземпляр REFont с именем выходного файла
+                    font.import_file(file_name)
+                    font.save(output_file)
+                QMessageBox.information(self, "Success", "All font conversions completed successfully!")
+        except Exception as e:
+            self.show_error_message(f"An error occurred: {e}")
 
 def set_taskbar_icon(icon_path):
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"mycompany.myproduct.subproduct.{icon_path}")
