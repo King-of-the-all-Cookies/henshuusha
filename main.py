@@ -707,7 +707,7 @@ class MainWindow(QMainWindow):
 
     def display_file_content(self, item):
         file_path = item.text()
-        if file_path.endswith('.png') or file_path.endswith('.dds'):
+        if file_path.endswith('.png'):
             pixmap = QPixmap(file_path)
             self.image_label.setPixmap(pixmap)
             self.scale_image_to_label()
