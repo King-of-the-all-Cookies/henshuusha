@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox, QTextEdit, QHBoxLayout, QWidget, QListWidget, QStackedWidget
 )
 from PyQt6.QtGui import QIcon, QAction, QClipboard, QPixmap
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QSize
 from pathlib import Path
 from win11toast import toast
 import inspect
@@ -112,6 +112,219 @@ class GameSelectionDialog(QDialog):
         self.selected_game = self.game_combo.currentIndex() + 1
         super().accept()
 
+class SingleTexConvertDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Convert Single Texture")
+        self.setLayout(QVBoxLayout())
+
+        # Выбор режима конвертации
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["PC -> NSW", "NSW -> PC"])
+        self.layout().addWidget(QLabel("Select Conversion Mode:"))
+        self.layout().addWidget(self.mode_combo)
+
+        # Выбор пути к текстуре PC
+        self.pc_tex_path = QPushButton("Select PC Texture")
+        self.pc_tex_path.clicked.connect(self.select_pc_tex)
+        self.layout().addWidget(self.pc_tex_path)
+        self.pc_tex_path_label = QLabel()
+        self.layout().addWidget(self.pc_tex_path_label)
+
+        # Выбор пути к текстуре NSW
+        self.nsw_tex_path = QPushButton("Select NSW Texture")
+        self.nsw_tex_path.clicked.connect(self.select_nsw_tex)
+        self.layout().addWidget(self.nsw_tex_path)
+        self.nsw_tex_path_label = QLabel()
+        self.layout().addWidget(self.nsw_tex_path_label)
+
+        # Выбор выходной папки
+        self.output_path_button = QPushButton("Select Output Directory")
+        self.output_path_button.clicked.connect(self.select_output_dir)
+        self.layout().addWidget(self.output_path_button)
+        self.output_path_label = QLabel()
+        self.layout().addWidget(self.output_path_label)
+
+        # Кнопка для начала конвертации
+        self.convert_button = QPushButton("Convert")
+        self.convert_button.clicked.connect(self.convert)
+        self.layout().addWidget(self.convert_button)
+
+    def select_pc_tex(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select PC Texture", "", "TEX Files (*.tex.*)")
+        if file_path:
+            self.pc_tex_path_label.setText(file_path)
+
+    def select_nsw_tex(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select NSW Texture", "", "TEX Files (*.tex.*)")
+        if file_path:
+            self.nsw_tex_path_label.setText(file_path)
+
+    def select_output_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if dir_path:
+            self.output_path_label.setText(dir_path)
+
+    def convert(self):
+        mode = self.mode_combo.currentText()
+        pc_path = self.pc_tex_path_label.text()
+        nsw_path = self.nsw_tex_path_label.text()
+        output_dir = self.output_path_label.text()
+
+        if not pc_path or not nsw_path or not output_dir:
+            QMessageBox.warning(self, "Warning", "Please select all required fields.")
+            return
+
+        if mode == "PC -> NSW":
+            output_file_name = Path(nsw_path).name
+        else:  # "NSW -> PC"
+            output_file_name = Path(pc_path).name
+
+        output_path = Path(output_dir) / output_file_name
+
+        try:
+            if mode == "PC -> NSW":
+                TexConverter.PCtex_to_NSWtex(Path(pc_path), Path(nsw_path), output_path)
+            else:  # "NSW -> PC"
+                TexConverter.NSWtex_to_PCtex(Path(nsw_path), Path(pc_path), output_path)
+            QMessageBox.information(self, "Success", "Texture converted successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred during conversion: {e}")
+
+class MultipleTexConvertDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Convert Multiple Textures")
+        self.setLayout(QVBoxLayout())
+
+        # Выбор режима конвертации
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["PC -> NSW", "NSW -> PC"])
+        self.layout().addWidget(QLabel("Select Conversion Mode:"))
+        self.layout().addWidget(self.mode_combo)
+
+        # Выбор папки для текстур PC
+        self.pc_dir_button = QPushButton("Select PC Directory")
+        self.pc_dir_button.clicked.connect(self.select_pc_dir)
+        self.layout().addWidget(self.pc_dir_button)
+        self.pc_dir_label = QLabel()
+        self.layout().addWidget(self.pc_dir_label)
+
+        # Выбор папки для текстур NSW
+        self.nsw_dir_button = QPushButton("Select NSW Directory")
+        self.nsw_dir_button.clicked.connect(self.select_nsw_dir)
+        self.layout().addWidget(self.nsw_dir_button)
+        self.nsw_dir_label = QLabel()
+        self.layout().addWidget(self.nsw_dir_label)
+
+        # Выбор выходной папки
+        self.output_dir_button = QPushButton("Select Output Directory")
+        self.output_dir_button.clicked.connect(self.select_output_dir)
+        self.layout().addWidget(self.output_dir_button)
+        self.output_dir_label = QLabel()
+        self.layout().addWidget(self.output_dir_label)
+
+        # Кнопка для начала конвертации
+        self.convert_button = QPushButton("Convert")
+        self.convert_button.clicked.connect(self.convert)
+        self.layout().addWidget(self.convert_button)
+
+    def select_pc_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select PC Directory")
+        if dir_path:
+            self.pc_dir_label.setText(dir_path)
+
+    def select_nsw_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select NSW Directory")
+        if dir_path:
+            self.nsw_dir_label.setText(dir_path)
+
+    def select_output_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if dir_path:
+            self.output_dir_label.setText(dir_path)
+
+    def convert(self):
+        mode = self.mode_combo.currentText()
+        pc_dir = self.pc_dir_label.text()
+        nsw_dir = self.nsw_dir_label.text()
+        output_dir = self.output_dir_label.text()
+
+        if not pc_dir or not nsw_dir or not output_dir:
+            QMessageBox.warning(self, "Warning", "Please select all required directories.")
+            return
+
+        pc_dir = Path(pc_dir)
+        nsw_dir = Path(nsw_dir)
+        output_dir = Path(output_dir)
+
+        try:
+            pc_files = list(pc_dir.rglob("*.tex.*"))
+            nsw_files = {f.name: f for f in nsw_dir.rglob("*.tex.*")}
+
+            pairs = []
+            for pc_file in pc_files:
+                if pc_file.name in nsw_files:
+                    pairs.append((pc_file, nsw_files[pc_file.name]))
+
+            for pc_file, nsw_file in pairs:
+                relative_path_pc = pc_file.relative_to(pc_dir)
+                relative_path_nsw = nsw_file.relative_to(nsw_dir)
+
+                if mode == "PC -> NSW":
+                    output_file = output_dir / relative_path_nsw
+                    output_file.parent.mkdir(parents=True, exist_ok=True)
+                    TexConverter.PCtex_to_NSWtex(pc_file, nsw_file, output_file)
+                else:  # "NSW -> PC"
+                    output_file = output_dir / relative_path_pc
+                    output_file.parent.mkdir(parents=True, exist_ok=True)
+                    TexConverter.NSWtex_to_PCtex(nsw_file, pc_file, output_file)
+
+            QMessageBox.information(self, "Success", "All textures converted successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred during conversion: {e}")
+
+from pathlib import Path
+from req.AJTTools.plugins.tex.src.Tex import Tex
+
+class TexConverter:
+    @staticmethod
+    def PCtex_to_NSWtex(pc_tex_path: Path, switch_tex_path: Path, output_switch_tex_path: Path) -> None:
+        """
+        Конвертирует текстуру из PC формата в Nintendo Switch, используя промежуточный DDS.
+
+        :param pc_tex_path: Путь к текстуре PC.
+        :param switch_tex_path: Путь к текстуре Switch.
+        :param output_switch_tex_path: Путь для сохранения конвертированной текстуры Switch.
+        """
+        pc_tex = Tex(pc_tex_path)
+        temp_dds = pc_tex_path.with_suffix('.temp_export.dds')
+        pc_tex.export_file(str(temp_dds))
+        switch_tex = Tex(switch_tex_path)
+        switch_tex.import_file(str(temp_dds))
+        switch_tex.save(output_switch_tex_path)
+        if temp_dds.exists():
+            temp_dds.unlink()
+
+    @staticmethod
+    def NSWtex_to_PCtex(switch_tex_path: Path, pc_tex_path: Path, output_pc_tex_path: Path) -> None:
+        """
+        Конвертирует текстуру из Nintendo Switch формата в PC, используя промежуточный DDS.
+
+        :param switch_tex_path: Путь к текстуре Switch.
+        :param pc_tex_path: Путь к текстуре PC.
+        :param output_pc_tex_path: Путь для сохранения конвертированной текстуры PC.
+        """
+        switch_tex = Tex(switch_tex_path)
+        temp_dds = switch_tex_path.with_suffix('.temp_export.dds')
+        switch_tex.export_file(str(temp_dds))
+        pc_tex = Tex(pc_tex_path)
+        pc_tex.import_file(str(temp_dds))
+        pc_tex.save(output_pc_tex_path)
+        if temp_dds.exists():
+            temp_dds.unlink()
+
+
 class MainWindow(QMainWindow):
     request_platform_and_unpack = pyqtSignal(Path)
 
@@ -189,6 +402,16 @@ class MainWindow(QMainWindow):
         gs4_encode_action.triggered.connect(self.encode_gs4_script)
         save_script_menu.addAction(gs4_encode_action)
 
+        # Новые действия для конвертации текстур
+        convert_menu = file_menu.addMenu('Convert')
+        convert_single_action = QAction('Convert PC ↔ NSW textures', self)
+        convert_single_action.triggered.connect(self.convert_single_tex)
+        convert_menu.addAction(convert_single_action)
+
+        convert_multiple_action = QAction('Convert PC ↔ NSW textures (multiple)', self)
+        convert_multiple_action.triggered.connect(self.convert_multiple_tex)
+        convert_menu.addAction(convert_multiple_action)
+
         # Действие для конвертации из otf в oft.1
         save_ajt_menu = save_menu.addMenu('AJT')
         font_save_menu = save_ajt_menu.addMenu('Font')
@@ -248,6 +471,14 @@ class MainWindow(QMainWindow):
         self.convert_text_messages = ctypes.CDLL(convert_text_dll_path)
         self.convert_text_messages.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
         self.convert_text_messages.main.restype = ctypes.c_int
+
+    def convert_single_tex(self):
+        dialog = SingleTexConvertDialog(self)
+        dialog.exec()
+
+    def convert_multiple_tex(self):
+        dialog = MultipleTexConvertDialog(self)
+        dialog.exec()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
