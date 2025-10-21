@@ -18,7 +18,7 @@ int compare_uint32(const void *a, const void *b) {
 	return 0;
 }
 
-/* returns non-zero if token is text, zero if command */
+/* возвращает не ноль, если токен это текст */
 unsigned int prepareToken(uint16_t *token, unsigned int gamenum, unsigned int isjp, unsigned int isunity) {
 	if(*token < 128 || (gamenum == GAME_APOLLO && *token < 128+16)) return 0; // opcode for script
 	//~ printf("original token is %08x ", *token);
