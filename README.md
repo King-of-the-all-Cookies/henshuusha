@@ -13,7 +13,7 @@
 ### Установка зависимостей
 
 ```sh
-pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile texture2ddecoder zstd PyQt6 win11toast
+pip install -r requirements.txt
 
 ```
 
@@ -36,7 +36,7 @@ https://github.com/King-of-the-all-Cookies/henshuusha/releases
 ### Installing Dependencies
 
 ```sh
-pip install astc_encoder_py chardet etcpak mmh3 Pillow pyswizzle soundfile texture2ddecoder zstd PyQt6 win11toast
+pip install -r requirements.txt
 ```
 
 ### Download release
