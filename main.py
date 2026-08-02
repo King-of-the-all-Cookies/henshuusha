@@ -151,12 +151,12 @@ class SingleTexConvertDialog(QDialog):
         self.layout().addWidget(self.convert_button)
 
     def select_pc_tex(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select PC Texture", "", "TEX Files (*.tex.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select PC Texture", "", "TEX Files (*.tex *.tex.*)")
         if file_path:
             self.pc_tex_path_label.setText(file_path)
 
     def select_nsw_tex(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select NSW Texture", "", "TEX Files (*.tex.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select NSW Texture", "", "TEX Files (*.tex *.tex.*)")
         if file_path:
             self.nsw_tex_path_label.setText(file_path)
 
@@ -259,33 +259,108 @@ class MultipleTexConvertDialog(QDialog):
         output_dir = Path(output_dir)
 
         try:
-            pc_files = list(pc_dir.rglob("*.tex.*"))
-            nsw_files = {f.name: f for f in nsw_dir.rglob("*.tex.*")}
+            # Собираем ВСЕ текстуры, независимо от языка:
+            # foo.tex, foo.tex.<id>, foo.tex.<id>.en, foo.tex.<id>.fr и т.д.
+            pc_files = [f for f in pc_dir.rglob("*") if is_tex_file(f)]
+            nsw_files = [f for f in nsw_dir.rglob("*") if is_tex_file(f)]
 
-            pairs = []
-            for pc_file in pc_files:
-                if pc_file.name in nsw_files:
-                    pairs.append((pc_file, nsw_files[pc_file.name]))
+            pc_by_name, pc_by_base = index_tex_files(pc_files)
+            nsw_by_name, nsw_by_base = index_tex_files(nsw_files)
 
-            for pc_file, nsw_file in pairs:
-                relative_path_pc = pc_file.relative_to(pc_dir)
-                relative_path_nsw = nsw_file.relative_to(nsw_dir)
+            if mode == "PC -> NSW":
+                sources, template_root, t_by_name, t_by_base, convert_fn = \
+                    pc_files, nsw_dir, nsw_by_name, nsw_by_base, TexConverter.PCtex_to_NSWtex
+            else:  # "NSW -> PC"
+                sources, template_root, t_by_name, t_by_base, convert_fn = \
+                    nsw_files, pc_dir, pc_by_name, pc_by_base, TexConverter.NSWtex_to_PCtex
 
-                if mode == "PC -> NSW":
-                    output_file = output_dir / relative_path_nsw
-                    output_file.parent.mkdir(parents=True, exist_ok=True)
-                    TexConverter.PCtex_to_NSWtex(pc_file, nsw_file, output_file)
-                else:  # "NSW -> PC"
-                    output_file = output_dir / relative_path_pc
-                    output_file.parent.mkdir(parents=True, exist_ok=True)
-                    TexConverter.NSWtex_to_PCtex(nsw_file, pc_file, output_file)
+            converted = 0
+            skipped = 0
+            for src_file in sources:
+                # Сначала ищем точное совпадение по имени, затем — по «базовому» имени
+                # (без языкового суффикса), чтобы конвертация работала для ЛЮБОГО языка.
+                template_file = find_tex_template(src_file, t_by_name, t_by_base)
 
-            QMessageBox.information(self, "Success", "All textures converted successfully!")
+                if template_file is None:
+                    skipped += 1
+                    continue
+
+                rel_template = template_file.relative_to(template_root)
+
+                # Имя выходного файла берём из исходной текстуры (сохраняя её языковой
+                # суффикс), а структуру каталогов — от текстуры-шаблона целевой платформы.
+                output_file = output_dir / rel_template.parent / src_file.name
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                convert_fn(src_file, template_file, output_file)
+                converted += 1
+
+            if converted == 0:
+                QMessageBox.warning(self, "Warning", "No matching textures found between the selected directories.")
+            else:
+                msg = f"All textures converted successfully! ({converted} file(s))"
+                if skipped:
+                    msg += f"\n{skipped} file(s) skipped - no matching texture found in the target directory."
+                QMessageBox.information(self, "Success", msg)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred during conversion: {e}")
 
 from pathlib import Path
 from req.AJTTools.plugins.tex.src.Tex import Tex
+
+# Языковые суффиксы, встречающиеся у файлов текстур Ace Attorney
+# (например: foo.tex.719230324.en). Дублирует список lang_exts
+# из req/AJTTools/utils/utils.py, чтобы не тянуть тяжёлые импорты.
+TEX_LANG_EXTS = {
+    'ja', 'en', 'de', 'fr', 'ko', 'it', 'es', 'zhcn', 'zhtw', 'ru', 'pl', 'nl',
+    'pt', 'ptbr', 'fi', 'sv', 'da', 'no', 'cs', 'hu', 'sk', 'ar', 'tr', 'bg',
+    'el', 'ro', 'th', 'ua', 'vi', 'id', 'cc', 'hi', 'es419'
+}
+
+
+def is_tex_file(path: Path) -> bool:
+    """True, если путь указывает на файл текстуры.
+    Принимает любые варианты имён независимо от языка:
+    foo.tex, foo.tex.<id>, foo.tex.<id>.en, foo.tex.<id>.fr и т.д.
+    """
+    return path.is_file() and (".tex." in path.name or path.name.endswith(".tex"))
+
+
+def get_tex_base_name(filename: str) -> str:
+    """Убирает языковой суффикс из имени текстуры:
+    'foo.tex.719230324.en' -> 'foo.tex.719230324'
+    'foo.tex.719230324'    -> 'foo.tex.719230324' (без изменений)
+    """
+    if "." in filename:
+        stem, last = filename.rsplit(".", 1)
+        if last in TEX_LANG_EXTS:
+            return stem
+    return filename
+
+
+def index_tex_files(files):
+    """Индексирует текстуры для поиска по точному имени и по «базовому» имени.
+    Возвращает (by_name, by_base). Для шаблона предпочитается «базовая»
+    текстура (без языкового суффикса), если она есть.
+    """
+    by_name = {}
+    by_base = {}
+    for f in files:
+        by_name[f.name] = f
+        base = get_tex_base_name(f.name)
+        if base not in by_base:
+            by_base[base] = f
+        elif f.name == base:
+            by_base[base] = f
+    return by_name, by_base
+
+
+def find_tex_template(src_file: Path, by_name: dict, by_base: dict):
+    """Находит текстуру-шаблон для конвертации: сначала по точному имени,
+    затем по «базовому» имени (без языкового суффикса) — так конвертация
+    работает для всех языков, а не только для совпадающих имён файлов.
+    """
+    return by_name.get(src_file.name) or by_base.get(get_tex_base_name(src_file.name))
+
 
 class TexConverter:
     @staticmethod
@@ -868,7 +943,7 @@ class MainWindow(QMainWindow):
 
     def convert_tex_to_image(self):
         options = QFileDialog.Option.ReadOnly
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Open TEX Files", "", "TEX Files (*.tex.*)", options=options)
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Open TEX Files", "", "TEX Files (*.tex *.tex.*)", options=options)
         if file_names:
             format_dialog = QDialog(self)
             format_dialog.setWindowTitle("Select Output Format")
@@ -902,7 +977,11 @@ class MainWindow(QMainWindow):
         results = []
         for file_name in file_names:
             tex = Tex(file_name)
-            output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(file_name))[0]}.{selected_format}")
+            # Сохраняем полное имя текстуры (включая языковой суффикс),
+            # чтобы файлы разных языков не перезаписывали друг друга:
+            # foo.tex.719230324.en -> foo.tex.719230324.en.png
+            base_name = os.path.basename(file_name)
+            output_file = os.path.join(output_dir, f"{base_name}.{selected_format}")
             tex.export_file(output_file)
             results.append(output_file)
         return results
