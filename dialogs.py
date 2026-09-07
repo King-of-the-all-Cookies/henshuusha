@@ -115,7 +115,7 @@ class SingleTexConvertDialog(QDialog):
         layout.addWidget(convert_button)
 
     def _select_file(self, title, label):
-        file_path, _ = QFileDialog.getOpenFileName(self, title, "", "TEX Files (*.tex.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, title, "", "TEX Files (*.tex *.tex.*)")
         if file_path:
             label.setText(file_path)
 
@@ -191,7 +191,9 @@ class MultipleTexConvertDialog(QDialog):
             label.setText(dir_path)
 
     def convert(self):
-        from .tex_converter import TexConverter
+        from .tex_converter import (
+            TexConverter, is_tex_file, index_tex_files, find_tex_template,
+        )
 
         mode = self.mode_combo.currentText()
         pc_dir = Path(self.pc_dir_label.text())
@@ -203,22 +205,49 @@ class MultipleTexConvertDialog(QDialog):
             return
 
         try:
-            pc_files = list(pc_dir.rglob("*.tex.*"))
-            nsw_files = {f.name: f for f in nsw_dir.rglob("*.tex.*")}
+            # Collect ALL textures regardless of language:
+            # foo.tex, foo.tex.<id>, foo.tex.<id>.en, foo.tex.<id>.fr, etc.
+            pc_files = [f for f in pc_dir.rglob("*") if is_tex_file(f)]
+            nsw_files = [f for f in nsw_dir.rglob("*") if is_tex_file(f)]
 
-            for pc_file in pc_files:
-                nsw_file = nsw_files.get(pc_file.name)
-                if nsw_file is None:
+            pc_by_name, pc_by_base = index_tex_files(pc_files)
+            nsw_by_name, nsw_by_base = index_tex_files(nsw_files)
+
+            if mode == "PC -> NSW":
+                sources, template_root, t_by_name, t_by_base, convert_fn = (
+                    pc_files, nsw_dir, nsw_by_name, nsw_by_base, TexConverter.PCtex_to_NSWtex,
+                )
+            else:  # "NSW -> PC"
+                sources, template_root, t_by_name, t_by_base, convert_fn = (
+                    nsw_files, pc_dir, pc_by_name, pc_by_base, TexConverter.NSWtex_to_PCtex,
+                )
+
+            converted = 0
+            skipped = 0
+            for src_file in sources:
+                # Match by exact name first, then by base name (without the
+                # language suffix) so conversion works for ANY language.
+                template_file = find_tex_template(src_file, t_by_name, t_by_base)
+
+                if template_file is None:
+                    skipped += 1
                     continue
 
-                if mode == "PC -> NSW":
-                    output_file = output_dir / nsw_file.relative_to(nsw_dir)
-                    TexConverter.PCtex_to_NSWtex(pc_file, nsw_file, output_file)
-                else:
-                    output_file = output_dir / pc_file.relative_to(pc_dir)
-                    TexConverter.NSWtex_to_PCtex(nsw_file, pc_file, output_file)
-                output_file.parent.mkdir(parents=True, exist_ok=True)
+                rel_template = template_file.relative_to(template_root)
 
-            QMessageBox.information(self, "Success", "All textures converted successfully!")
+                # Output name comes from the source texture (keeps its language
+                # suffix); folder structure comes from the target template.
+                output_file = output_dir / rel_template.parent / src_file.name
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                convert_fn(src_file, template_file, output_file)
+                converted += 1
+
+            if converted == 0:
+                QMessageBox.warning(self, "Warning", "No matching textures found between the selected directories.")
+            else:
+                msg = f"All textures converted successfully! ({converted} file(s))"
+                if skipped:
+                    msg += f"\n{skipped} file(s) skipped - no matching texture found in the target directory."
+                QMessageBox.information(self, "Success", msg)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred during conversion: {e}")

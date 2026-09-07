@@ -125,8 +125,11 @@ def _convert_tex_to_image(file_names, output_format, output_dir):
     results = []
     for file_name in file_names:
         tex = Tex(file_name)
-        base = os.path.splitext(os.path.basename(file_name))[0]
-        output_file = os.path.join(output_dir, f"{base}.{output_format}")
+        # Keep the full texture name (including the language suffix) so files of
+        # different languages don't overwrite each other:
+        # foo.tex.719230324.en -> foo.tex.719230324.en.png
+        base_name = os.path.basename(file_name)
+        output_file = os.path.join(output_dir, f"{base_name}.{output_format}")
         tex.export_file(output_file)
         results.append(output_file)
     return results
@@ -565,7 +568,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def convert_tex_to_image(self):
-        file_names = self._select_files("Open TEX Files", "TEX Files (*.tex.*)")
+        file_names = self._select_files("Open TEX Files", "TEX Files (*.tex *.tex.*)")
         if not file_names:
             return
 
