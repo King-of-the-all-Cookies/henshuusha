@@ -1,425 +1,201 @@
-import sys
-import os
-import traceback
-import logging
-from datetime import datetime
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QMenuBar, QMenu, QFileDialog,
-    QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox, QTextEdit, QHBoxLayout, QWidget, QListWidget, QStackedWidget
-)
-from PyQt6.QtGui import QIcon, QAction, QClipboard, QPixmap
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QSize
-from pathlib import Path
-from win11toast import toast
-import inspect
+"""Henshuusha — GUI application for working with Ace Attorney (Gyakuten Saiban) game files.
+
+Features:
+  - GS56/GS4 script conversion via AJTTools (txt <-> user2) and AJT56script (json/bin)
+  - TEX <-> image (PNG/DDS) conversion
+  - Font (oft.1 <-> otf) and PAK packing/unpacking
+"""
 import ctypes
+import logging
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
 
-# Настройка логирования
-log_directory = Path("logs")
-log_directory.mkdir(exist_ok=True)
-log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S.log")
-log_filepath = log_directory / log_filename
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_filepath),
-        logging.StreamHandler()
-    ]
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon, QAction, QPixmap
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QMenu, QFileDialog, QDialog, QMessageBox,
+    QTextEdit, QHBoxLayout, QWidget, QListWidget, QStackedWidget, QPushButton, QLabel,
 )
 
-class WorkerSignals(QObject):
-    result = pyqtSignal(object)
-    finished = pyqtSignal()
-    error = pyqtSignal(tuple)
+from dialogs import (
+    PlatformDialog, GameSelectionDialog, FormatSelectDialog,
+    SingleTexConvertDialog, MultipleTexConvertDialog,
+)
+from workers import WorkerThread, notify
 
-class WorkerThread(QThread):
-    def __init__(self, function, *args):
-        super().__init__()
-        self.function = function
-        self.args = args
-        self.signals = WorkerSignals()
+BASE_DIR = Path(__file__).parent
 
-    def run(self):
-        try:
-            logging.info("WorkerThread started")
-            result = self.function(*self.args)
-            self.signals.result.emit(result)
-        except Exception as e:
-            traceback_str = traceback.format_exc()
-            logging.error(f"Error in WorkerThread: {e}\n{traceback_str}")
-            self.signals.error.emit((e, traceback_str))
-        finally:
-            logging.info("WorkerThread finished")
-            self.signals.finished.emit()
 
-class PlatformDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Platform")
-        self.selected_platform = None
-        self.selected_list_file = None
-        self.output_dir = None
+def setup_logging():
+    log_directory = Path("logs")
+    log_directory.mkdir(exist_ok=True)
+    log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_directory / log_filename),
+            logging.StreamHandler(),
+        ],
+    )
 
-        layout = QVBoxLayout()
 
-        self.platform_label = QLabel("Select Platform:")
-        layout.addWidget(self.platform_label)
+# ---------------------------------------------------------------------------
+# Background worker functions (run off the UI thread)
+# ---------------------------------------------------------------------------
 
-        self.platform_combo = QComboBox()
-        self.platform_combo.addItems(["Steam (PC)", "Nintendo Switch", "PlayStation 4"])
-        layout.addWidget(self.platform_combo)
+def _decode_gs56_json(file_names):
+    """Decode GS56 scripts to .json using the AJT56script wrapper."""
+    from req.AJT56script import decode_script
+    results = []
+    for file_name in file_names:
+        output_file = Path(file_name).with_suffix('.json')
+        decode_script(file_name, output_file)
+        results.append(output_file.read_text(encoding='utf-8'))
+    return results
 
-        self.ok_button = QPushButton("OK")
-        self.ok_button.clicked.connect(self.accept)
-        layout.addWidget(self.ok_button)
 
-        self.setLayout(layout)
+def _encode_gs56_json(file_names):
+    """Encode GS56 scripts from .json back to binary using the AJT56script wrapper."""
+    from req.AJT56script import encode_script
+    results = []
+    for file_name in file_names:
+        output_file = Path(file_name).with_suffix('.bin')
+        encode_script(file_name, output_file)
+        results.append(output_file.read_bytes().decode('utf-8', errors='ignore'))
+    return results
 
-    def accept(self):
-        self.selected_platform = self.platform_combo.currentText()
-        super().accept()
 
-class GameSelectionDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Game")
-        self.selected_game = None
+def _decode_gs56_ajt(file_names):
+    """Decode GS56 scripts to .txt using AJTTools (AA56Script)."""
+    from req.AJTTools.plugins.script import AA56Script
+    results = []
+    for file_name in file_names:
+        file_path = Path(file_name)
+        output_file = file_path.with_suffix('.txt')
+        script = AA56Script(file_path)
+        script.write_txt(output_file)
+        results.append(output_file.read_text(encoding='utf-8'))
+    return results
 
-        layout = QVBoxLayout()
 
-        self.game_label = QLabel("Select Game:")
-        layout.addWidget(self.game_label)
+def _encode_gs56_ajt(file_names):
+    """Encode GS56 scripts from .txt back to .user2 using AJTTools (AA56Script)."""
+    from req.AJTTools.plugins.script import AA56Script
+    results = []
+    for file_name in file_names:
+        file_path = Path(file_name)
+        output_file = file_path.with_suffix('.user.2')
+        script = AA56Script(file_path)
+        script.write_user2(output_file)
+        results.append(output_file.read_bytes().decode('utf-8', errors='ignore'))
+    return results
 
-        self.game_combo = QComboBox()
-        self.game_combo.addItems([
-            "1 - original phoenix wright",
-            "2 - justice for all",
-            "3 - trials and tribulations",
-            "4 - apollo justice",
-            "5 - Gyakuten Saiban 1 (GBA)"
-        ])
-        layout.addWidget(self.game_combo)
 
-        self.ok_button = QPushButton("OK")
-        self.ok_button.clicked.connect(self.accept)
-        layout.addWidget(self.ok_button)
+def _decode_gs4_ajt(file_names):
+    """Decode GS4 scripts to .txt using AJTTools (AA4Script)."""
+    from req.AJTTools.plugins.script import AA4Script
+    results = []
+    for file_name in file_names:
+        file_path = Path(file_name)
+        output_file = file_path.with_suffix('.txt')
+        script = AA4Script(file_path)
+        script.write_txt(output_file)
+        results.append(output_file.read_text(encoding='utf-8'))
+    return results
 
-        self.setLayout(layout)
 
-    def accept(self):
-        self.selected_game = self.game_combo.currentIndex() + 1
-        super().accept()
+def _encode_gs4_ajt(file_names):
+    """Encode GS4 scripts from .txt back to .user2 using AJTTools (AA4Script)."""
+    from req.AJTTools.plugins.script import AA4Script
+    results = []
+    for file_name in file_names:
+        file_path = Path(file_name)
+        output_file = file_path.with_suffix('.user.2')
+        script = AA4Script(file_path)
+        script.write_user2(output_file)
+        results.append(output_file.read_bytes().decode('utf-8', errors='ignore'))
+    return results
 
-class SingleTexConvertDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Convert Single Texture")
-        self.setLayout(QVBoxLayout())
 
-        # Выбор режима конвертации
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["PC -> NSW", "NSW -> PC"])
-        self.layout().addWidget(QLabel("Select Conversion Mode:"))
-        self.layout().addWidget(self.mode_combo)
+def _convert_tex_to_image(file_names, output_format, output_dir):
+    from req.AJTTools.plugins.tex import Tex
+    results = []
+    for file_name in file_names:
+        tex = Tex(file_name)
+        base = os.path.splitext(os.path.basename(file_name))[0]
+        output_file = os.path.join(output_dir, f"{base}.{output_format}")
+        tex.export_file(output_file)
+        results.append(output_file)
+    return results
 
-        # Выбор пути к текстуре PC
-        self.pc_tex_path = QPushButton("Select PC Texture")
-        self.pc_tex_path.clicked.connect(self.select_pc_tex)
-        self.layout().addWidget(self.pc_tex_path)
-        self.pc_tex_path_label = QLabel()
-        self.layout().addWidget(self.pc_tex_path_label)
 
-        # Выбор пути к текстуре NSW
-        self.nsw_tex_path = QPushButton("Select NSW Texture")
-        self.nsw_tex_path.clicked.connect(self.select_nsw_tex)
-        self.layout().addWidget(self.nsw_tex_path)
-        self.nsw_tex_path_label = QLabel()
-        self.layout().addWidget(self.nsw_tex_path_label)
+def _convert_image_to_tex(file_names, output_dir):
+    from req.AJTTools.plugins.tex import Tex
+    results = []
+    for file_name in file_names:
+        base = os.path.basename(file_name).replace('.png', '.tex.35').replace('.dds', '.tex.35')
+        output_file = os.path.join(output_dir, base)
+        tex = Tex(output_file)
+        tex.import_file(file_name)
+        tex.save(output_file)
+        results.append(output_file)
+    return results
 
-        # Выбор выходной папки
-        self.output_path_button = QPushButton("Select Output Directory")
-        self.output_path_button.clicked.connect(self.select_output_dir)
-        self.layout().addWidget(self.output_path_button)
-        self.output_path_label = QLabel()
-        self.layout().addWidget(self.output_path_label)
 
-        # Кнопка для начала конвертации
-        self.convert_button = QPushButton("Convert")
-        self.convert_button.clicked.connect(self.convert)
-        self.layout().addWidget(self.convert_button)
+def _convert_fonts_to_otf(file_names, output):
+    from req.AJTTools.plugins.font import REFont
+    if isinstance(output, str):
+        REFont(file_names[0]).export_file(output)
+    else:
+        for file_name in file_names:
+            base = os.path.basename(file_name).replace('.oft.', '.otf')
+            REFont(file_name).export_file(os.path.join(output, base))
 
-    def select_pc_tex(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select PC Texture", "", "TEX Files (*.tex.*)")
-        if file_path:
-            self.pc_tex_path_label.setText(file_path)
 
-    def select_nsw_tex(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select NSW Texture", "", "TEX Files (*.tex.*)")
-        if file_path:
-            self.nsw_tex_path_label.setText(file_path)
+def _convert_fonts_to_oft(file_names, output):
+    from req.AJTTools.plugins.font import REFont
+    if isinstance(output, str):
+        font = REFont(output)
+        font.import_file(file_names[0])
+        font.save(output)
+    else:
+        for file_name in file_names:
+            base = os.path.basename(file_name).replace('.otf', '.oft.1')
+            output_file = os.path.join(output, base)
+            font = REFont(output_file)
+            font.import_file(file_name)
+            font.save(output_file)
 
-    def select_output_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if dir_path:
-            self.output_path_label.setText(dir_path)
 
-    def convert(self):
-        mode = self.mode_combo.currentText()
-        pc_path = self.pc_tex_path_label.text()
-        nsw_path = self.nsw_tex_path_label.text()
-        output_dir = self.output_path_label.text()
+def _build_pak(dir_path, pak_path):
+    from req.AJTTools.plugins.pak.src.Pak import build_pak_from_dir
+    build_pak_from_dir(dir_path, pak_path)
 
-        if not pc_path or not nsw_path or not output_dir:
-            QMessageBox.warning(self, "Warning", "Please select all required fields.")
-            return
 
-        if mode == "PC -> NSW":
-            output_file_name = Path(nsw_path).name
-        else:  # "NSW -> PC"
-            output_file_name = Path(pc_path).name
-
-        output_path = Path(output_dir) / output_file_name
-
-        try:
-            if mode == "PC -> NSW":
-                TexConverter.PCtex_to_NSWtex(Path(pc_path), Path(nsw_path), output_path)
-            else:  # "NSW -> PC"
-                TexConverter.NSWtex_to_PCtex(Path(nsw_path), Path(pc_path), output_path)
-            QMessageBox.information(self, "Success", "Texture converted successfully!")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred during conversion: {e}")
-
-class MultipleTexConvertDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Convert Multiple Textures")
-        self.setLayout(QVBoxLayout())
-
-        # Выбор режима конвертации
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["PC -> NSW", "NSW -> PC"])
-        self.layout().addWidget(QLabel("Select Conversion Mode:"))
-        self.layout().addWidget(self.mode_combo)
-
-        # Выбор папки для текстур PC
-        self.pc_dir_button = QPushButton("Select PC Directory")
-        self.pc_dir_button.clicked.connect(self.select_pc_dir)
-        self.layout().addWidget(self.pc_dir_button)
-        self.pc_dir_label = QLabel()
-        self.layout().addWidget(self.pc_dir_label)
-
-        # Выбор папки для текстур NSW
-        self.nsw_dir_button = QPushButton("Select NSW Directory")
-        self.nsw_dir_button.clicked.connect(self.select_nsw_dir)
-        self.layout().addWidget(self.nsw_dir_button)
-        self.nsw_dir_label = QLabel()
-        self.layout().addWidget(self.nsw_dir_label)
-
-        # Выбор выходной папки
-        self.output_dir_button = QPushButton("Select Output Directory")
-        self.output_dir_button.clicked.connect(self.select_output_dir)
-        self.layout().addWidget(self.output_dir_button)
-        self.output_dir_label = QLabel()
-        self.layout().addWidget(self.output_dir_label)
-
-        # Кнопка для начала конвертации
-        self.convert_button = QPushButton("Convert")
-        self.convert_button.clicked.connect(self.convert)
-        self.layout().addWidget(self.convert_button)
-
-    def select_pc_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select PC Directory")
-        if dir_path:
-            self.pc_dir_label.setText(dir_path)
-
-    def select_nsw_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select NSW Directory")
-        if dir_path:
-            self.nsw_dir_label.setText(dir_path)
-
-    def select_output_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if dir_path:
-            self.output_dir_label.setText(dir_path)
-
-    def convert(self):
-        mode = self.mode_combo.currentText()
-        pc_dir = self.pc_dir_label.text()
-        nsw_dir = self.nsw_dir_label.text()
-        output_dir = self.output_dir_label.text()
-
-        if not pc_dir or not nsw_dir or not output_dir:
-            QMessageBox.warning(self, "Warning", "Please select all required directories.")
-            return
-
-        pc_dir = Path(pc_dir)
-        nsw_dir = Path(nsw_dir)
-        output_dir = Path(output_dir)
-
-        try:
-            pc_files = list(pc_dir.rglob("*.tex.*"))
-            nsw_files = {f.name: f for f in nsw_dir.rglob("*.tex.*")}
-
-            pairs = []
-            for pc_file in pc_files:
-                if pc_file.name in nsw_files:
-                    pairs.append((pc_file, nsw_files[pc_file.name]))
-
-            for pc_file, nsw_file in pairs:
-                relative_path_pc = pc_file.relative_to(pc_dir)
-                relative_path_nsw = nsw_file.relative_to(nsw_dir)
-
-                if mode == "PC -> NSW":
-                    output_file = output_dir / relative_path_nsw
-                    output_file.parent.mkdir(parents=True, exist_ok=True)
-                    TexConverter.PCtex_to_NSWtex(pc_file, nsw_file, output_file)
-                else:  # "NSW -> PC"
-                    output_file = output_dir / relative_path_pc
-                    output_file.parent.mkdir(parents=True, exist_ok=True)
-                    TexConverter.NSWtex_to_PCtex(nsw_file, pc_file, output_file)
-
-            QMessageBox.information(self, "Success", "All textures converted successfully!")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred during conversion: {e}")
-
-from pathlib import Path
-from req.AJTTools.plugins.tex.src.Tex import Tex
-
-class TexConverter:
-    @staticmethod
-    def PCtex_to_NSWtex(pc_tex_path: Path, switch_tex_path: Path, output_switch_tex_path: Path) -> None:
-        """
-        Конвертирует текстуру из PC формата в Nintendo Switch, используя промежуточный DDS.
-
-        :param pc_tex_path: Путь к текстуре PC.
-        :param switch_tex_path: Путь к текстуре Switch.
-        :param output_switch_tex_path: Путь для сохранения конвертированной текстуры Switch.
-        """
-        pc_tex = Tex(pc_tex_path)
-        temp_dds = pc_tex_path.with_suffix('.temp_export.dds')
-        pc_tex.export_file(str(temp_dds))
-        switch_tex = Tex(switch_tex_path)
-        switch_tex.import_file(str(temp_dds))
-        switch_tex.save(output_switch_tex_path)
-        if temp_dds.exists():
-            temp_dds.unlink()
-
-    @staticmethod
-    def NSWtex_to_PCtex(switch_tex_path: Path, pc_tex_path: Path, output_pc_tex_path: Path) -> None:
-        """
-        Конвертирует текстуру из Nintendo Switch формата в PC, используя промежуточный DDS.
-
-        :param switch_tex_path: Путь к текстуре Switch.
-        :param pc_tex_path: Путь к текстуре PC.
-        :param output_pc_tex_path: Путь для сохранения конвертированной текстуры PC.
-        """
-        switch_tex = Tex(switch_tex_path)
-        temp_dds = switch_tex_path.with_suffix('.temp_export.dds')
-        switch_tex.export_file(str(temp_dds))
-        pc_tex = Tex(pc_tex_path)
-        pc_tex.import_file(str(temp_dds))
-        pc_tex.save(output_pc_tex_path)
-        if temp_dds.exists():
-            temp_dds.unlink()
-
+# ---------------------------------------------------------------------------
+# Main window
+# ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    request_platform_and_unpack = pyqtSignal(Path)
-
     def __init__(self):
         super().__init__()
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+        self.worker_thread = None
+        self._setup_window()
+        self._setup_central_widget()
+        self._build_menus()
+        self._load_dlls()
 
+    # -- UI setup ----------------------------------------------------------
+
+    def _setup_window(self):
         self.setWindowTitle("Henshuusha")
         self.setGeometry(100, 100, 800, 600)
         self.setWindowIcon(QIcon('icon.png'))
 
-        menubar = self.menuBar()
-
-        file_menu = menubar.addMenu('File')
-
-        open_menu = file_menu.addMenu('Open')
-        ds_menu = open_menu.addMenu('DS')
-        gs1234_menu = ds_menu.addMenu('GS1234')
-
-        extract_mes_action = QAction('mes_all.bin', self)
-        extract_mes_action.triggered.connect(self.extract_mes_all_bin)
-        gs1234_menu.addAction(extract_mes_action)
-
-        convert_text_action = QAction('Script Converter', self)
-        convert_text_action.triggered.connect(self.convert_text_messages)
-        gs1234_menu.addAction(convert_text_action)
-
-        ajt_menu = open_menu.addMenu('AJT')
-        font_menu = ajt_menu.addMenu('Font')
-
-        # Действие для конвертации из oft.1 в otf
-        oft_to_otf_action = QAction('oft.1 -> otf', self)
-        oft_to_otf_action.triggered.connect(self.convert_oft_to_otf)
-        font_menu.addAction(oft_to_otf_action)
-
-        pak_menu = ajt_menu.addMenu('PAK')
-
-        unpack_action = QAction('Unpack', self)
-        unpack_action.triggered.connect(self.unpack_pak)
-        pak_menu.addAction(unpack_action)
-
-        tex_menu = ajt_menu.addMenu('TEX')
-        convert_to_image_action = QAction('Convert to DDS/PNG', self)
-        convert_to_image_action.triggered.connect(self.convert_tex_to_image)
-        tex_menu.addAction(convert_to_image_action)
-
-        script_menu = ajt_menu.addMenu('Script')
-        gs56_decode_action = QAction('GS56 Decode', self)
-        gs56_decode_action.triggered.connect(self.decode_gs56_script)
-        script_menu.addAction(gs56_decode_action)
-
-        gs4_decode_action = QAction('GS4 Decode', self)
-        gs4_decode_action.triggered.connect(self.decode_gs4_script)
-        script_menu.addAction(gs4_decode_action)
-
-        save_menu = file_menu.addMenu('Save')
-        save_ajt_menu = save_menu.addMenu('AJT')
-
-        save_pak_menu = save_ajt_menu.addMenu('PAK')
-        create_pak_action = QAction('Create PAK', self)
-        create_pak_action.triggered.connect(self.create_pak)
-        save_pak_menu.addAction(create_pak_action)
-
-        save_tex_menu = save_ajt_menu.addMenu('TEX')
-        convert_to_tex_action = QAction('Convert to TEX', self)
-        convert_to_tex_action.triggered.connect(self.convert_image_to_tex)
-        save_tex_menu.addAction(convert_to_tex_action)
-
-        save_script_menu = save_ajt_menu.addMenu('Script')
-        gs56_encode_action = QAction('GS56 Encode', self)
-        gs56_encode_action.triggered.connect(self.encode_gs56_script)
-        save_script_menu.addAction(gs56_encode_action)
-
-        gs4_encode_action = QAction('GS4 Encode', self)
-        gs4_encode_action.triggered.connect(self.encode_gs4_script)
-        save_script_menu.addAction(gs4_encode_action)
-
-        # Новые действия для конвертации текстур
-        convert_menu = file_menu.addMenu('Convert')
-        convert_single_action = QAction('Convert PC ↔ NSW textures', self)
-        convert_single_action.triggered.connect(self.convert_single_tex)
-        convert_menu.addAction(convert_single_action)
-
-        convert_multiple_action = QAction('Convert PC ↔ NSW textures (multiple)', self)
-        convert_multiple_action.triggered.connect(self.convert_multiple_tex)
-        convert_menu.addAction(convert_multiple_action)
-
-        # Действие для конвертации из otf в oft.1
-        save_ajt_menu = save_menu.addMenu('AJT')
-        font_save_menu = save_ajt_menu.addMenu('Font')
-
-        otf_to_oft_action = QAction('otf -> oft.1', self)
-        otf_to_oft_action.triggered.connect(self.convert_otf_to_oft)
-        font_save_menu.addAction(otf_to_oft_action)
-
+    def _setup_central_widget(self):
         self.text_edit = QTextEdit(self)
         self.text_edit.setReadOnly(True)
 
@@ -455,30 +231,113 @@ class MainWindow(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
+        self._hide_viewer()
+
+    def _build_menus(self):
+        file_menu = self.menuBar().addMenu('File')
+        file_menu.addMenu(self._build_open_menu())
+        file_menu.addMenu(self._build_save_menu())
+        file_menu.addMenu(self._build_convert_menu())
+
+    def _build_open_menu(self):
+        open_menu = QMenu('Open', self)
+
+        ds_menu = open_menu.addMenu('DS')
+        gs1234_menu = ds_menu.addMenu('GS1234')
+        gs1234_menu.addAction(self._make_action('mes_all.bin', self._extract_mes_all_bin))
+        gs1234_menu.addAction(self._make_action('Script Converter', self._convert_text_messages))
+
+        ajt_menu = open_menu.addMenu('AJT')
+        font_menu = ajt_menu.addMenu('Font')
+        font_menu.addAction(self._make_action('oft.1 -> otf', self.convert_oft_to_otf))
+
+        pak_menu = ajt_menu.addMenu('PAK')
+        pak_menu.addAction(self._make_action('Unpack', self.unpack_pak))
+
+        tex_menu = ajt_menu.addMenu('TEX')
+        tex_menu.addAction(self._make_action('Convert to DDS/PNG', self.convert_tex_to_image))
+
+        script_menu = ajt_menu.addMenu('Script')
+        script_menu.addAction(self._make_action('GS56 Decode (AJTTools, txt)', self.decode_gs56_ajt))
+        script_menu.addAction(self._make_action('GS56 Decode (JSON)', self.decode_gs56_json))
+        script_menu.addAction(self._make_action('GS4 Decode (txt)', self.decode_gs4))
+
+        return open_menu
+
+    def _build_save_menu(self):
+        save_menu = QMenu('Save', self)
+        save_ajt_menu = save_menu.addMenu('AJT')
+
+        save_pak_menu = save_ajt_menu.addMenu('PAK')
+        save_pak_menu.addAction(self._make_action('Create PAK', self.create_pak))
+
+        save_tex_menu = save_ajt_menu.addMenu('TEX')
+        save_tex_menu.addAction(self._make_action('Convert to TEX', self.convert_image_to_tex))
+
+        save_font_menu = save_ajt_menu.addMenu('Font')
+        save_font_menu.addAction(self._make_action('otf -> oft.1', self.convert_otf_to_oft))
+
+        save_script_menu = save_ajt_menu.addMenu('Script')
+        save_script_menu.addAction(self._make_action('GS56 Encode (AJTTools, txt)', self.encode_gs56_ajt))
+        save_script_menu.addAction(self._make_action('GS56 Encode (JSON)', self.encode_gs56_json))
+        save_script_menu.addAction(self._make_action('GS4 Encode (txt)', self.encode_gs4))
+
+        return save_menu
+
+    def _build_convert_menu(self):
+        convert_menu = QMenu('Convert', self)
+        convert_menu.addAction(self._make_action('Convert PC <-> NSW textures', self.convert_single_tex))
+        convert_menu.addAction(self._make_action('Convert PC <-> NSW textures (multiple)', self.convert_multiple_tex))
+        return convert_menu
+
+    def _make_action(self, text, slot):
+        action = QAction(text, self)
+        action.triggered.connect(slot)
+        return action
+
+    def _load_dlls(self):
+        self.extract_mes_dll = _load_dll('extract_mes_all_bin.dll')
+        self.convert_text_dll = _load_dll('convert_text_messages.dll')
+
+    # -- Generic helpers ---------------------------------------------------
+
+    def _select_files(self, caption, file_filter):
+        options = QFileDialog.Option.ReadOnly
+        file_names, _ = QFileDialog.getOpenFileNames(self, caption, "", file_filter, options=options)
+        return file_names
+
+    def _start_worker(self, function, *args, on_result=None, on_done=None):
+        """Run `function(*args)` in the background; notifications are fire-and-forget."""
+        self.worker_thread = WorkerThread(function, *args)
+        if on_result is not None:
+            self.worker_thread.signals.result.connect(on_result)
+        if on_done is not None:
+            self.worker_thread.signals.finished.connect(lambda: notify(*on_done))
+        self.worker_thread.signals.error.connect(self._handle_worker_error)
+        self.worker_thread.start()
+
+    def _handle_worker_error(self, error):
+        e, traceback_str = error
+        logging.error(f"Background task failed: {e}\n{traceback_str}")
+        QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+
+    def _show_results(self, results):
+        if results:
+            self.text_edit.setPlainText("\n".join(results))
+            self._show_viewer()
+
+    def _show_viewer(self):
+        self.text_edit.setVisible(True)
+        self.copy_path_button.setVisible(True)
+        self.close_button.setVisible(True)
+
+    def _hide_viewer(self):
         self.text_edit.setVisible(False)
         self.copy_path_button.setVisible(False)
         self.close_button.setVisible(False)
         self.file_list_widget.setVisible(False)
 
-        self.request_platform_and_unpack.connect(self.select_platform_and_unpack)
-
-        extract_mes_dll_path = os.path.join(os.path.dirname(__file__), 'req', 'DS', 'extract_mes_all_bin.dll')
-        self.extract_mes_all_bin = ctypes.CDLL(extract_mes_dll_path)
-        self.extract_mes_all_bin.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
-        self.extract_mes_all_bin.main.restype = ctypes.c_int
-
-        convert_text_dll_path = os.path.join(os.path.dirname(__file__), 'req', 'DS', 'convert_text_messages.dll')
-        self.convert_text_messages = ctypes.CDLL(convert_text_dll_path)
-        self.convert_text_messages.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
-        self.convert_text_messages.main.restype = ctypes.c_int
-
-    def convert_single_tex(self):
-        dialog = SingleTexConvertDialog(self)
-        dialog.exec()
-
-    def convert_multiple_tex(self):
-        dialog = MultipleTexConvertDialog(self)
-        dialog.exec()
+    # -- Viewers -----------------------------------------------------------
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -486,449 +345,22 @@ class MainWindow(QMainWindow):
 
     def scale_image_to_label(self):
         if self.image_label.pixmap():
-            pixmap = self.image_label.pixmap()
-            scaled_pixmap = pixmap.scaled(
-                self.image_label.size() * 0.9,  # 90% от размера QLabel
+            scaled_pixmap = self.image_label.pixmap().scaled(
+                self.image_label.size() * 0.9,
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                Qt.TransformationMode.SmoothTransformation,
             )
             self.image_label.setPixmap(scaled_pixmap)
 
-    def show_error_message(self, message):
-        logging.error(f"Error message: {message}")
-        QMessageBox.critical(self, "Error", message)
-
-    def unpack_pak(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Unpacking PAK file")
-            options = QFileDialog.Option.ReadOnly
-            file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", "PAK Files (*.pak)", options=options)
-            if file_name:
-                logging.info(f"Selected file: {file_name}")
-
-                self.worker_thread = WorkerThread(lambda: self.request_platform_and_unpack.emit(Path(file_name)))
-                self.worker_thread.signals.finished.connect(self.handle_unpack_finished)
-                self.worker_thread.signals.error.connect(self.handle_unpack_error)
-                self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error opening file: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def handle_unpack_result(self, result):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info(f"Unpack result: {result}")
-
-    def handle_unpack_finished(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("Unpack finished")
-        toast("Unpacking Finished", "The unpacking process has been completed successfully.")
-
-    def handle_unpack_error(self, error):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        e, traceback_str = error
-        logging.error(f"Unpack error: {e}\n{traceback_str}")
-        self.show_error_message(f"An error occurred: {e}")
-
-    def select_platform_and_unpack(self, file_name):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Selecting platform and unpacking")
-            dialog = PlatformDialog(self)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                selected_platform = dialog.selected_platform
-                logging.info(f"Selected platform: {selected_platform}")
-
-                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-                if output_dir:
-                    logging.info(f"Selected output directory: {output_dir}")
-
-                    list_path = Path(os.path.dirname(__file__)) / 'req' / 'list_path'
-                    list_files = [f for f in list_path.iterdir() if f.suffix == '.list']
-
-                    if selected_platform == "Steam (PC)":
-                        selected_list_file = "steam.list"
-                    elif selected_platform == "Nintendo Switch":
-                        selected_list_file = "nsw.list"
-                    elif selected_platform == "PlayStation 4":
-                        selected_list_file = "ps4.list"
-
-                    release_list_path = list_path / selected_list_file
-                    from req.AJTTools.plugins.pak.src.Pak import REPak
-
-                    pak = REPak(file_name)
-                    self.worker_thread = WorkerThread(pak.unpack, Path(output_dir), release_list_path)
-                    self.worker_thread.signals.finished.connect(self.handle_unpack_finished)
-                    self.worker_thread.signals.error.connect(self.handle_unpack_error)
-                    self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error selecting platform and unpacking: {e}")
-            raise
-
-    def decode_gs56_script(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Decoding GS56 script")
-            options = QFileDialog.Option.ReadOnly
-            file_names, _ = QFileDialog.getOpenFileNames(self, "Open File", "", "Script Files (*.user.2.*)", options=options)
-            if file_names:
-                logging.info(f"Selected files: {file_names}")
-
-                def decode():
-                    from req.AJT56script import decode_script
-                    results = []
-                    for file_name in file_names:
-                        output_file = Path(file_name).with_suffix('.json')
-                        decode_script(file_name, output_file)
-                        with open(output_file, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        results.append(content)
-                    return results
-
-                self.worker_thread = WorkerThread(decode)
-                self.worker_thread.signals.result.connect(self.handle_decode_result)
-                self.worker_thread.signals.finished.connect(self.handle_decode_finished)
-                self.worker_thread.signals.error.connect(self.handle_decode_error)
-                self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error decoding script: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def handle_decode_result(self, result):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        if result:
-            combined_content = "\n".join(result)
-            self.text_edit.setPlainText(combined_content)
-            self.text_edit.setVisible(True)
-            self.copy_path_button.setVisible(True)
-            self.close_button.setVisible(True)
-            QMessageBox.information(self, "Success", "Script decoding completed successfully!")
-
-    def handle_decode_finished(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("Decode finished")
-        toast("Decoding Finished", "The decoding process has been completed successfully.")
-
-    def handle_decode_error(self, error):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        e, traceback_str = error
-        logging.error(f"Decode error: {e}\n{traceback_str}")
-        self.show_error_message(f"An error occurred: {e}")
-
-    def encode_gs56_script(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Encoding GS56 script")
-            options = QFileDialog.Option.ReadOnly
-            file_names, _ = QFileDialog.getOpenFileNames(self, "Open File", "", "Script Files (*.json *.bin)", options=options)
-            if file_names:
-                logging.info(f"Selected files: {file_names}")
-
-                def encode():
-                    from req.AJT56script import encode_script
-                    results = []
-                    for file_name in file_names:
-                        output_file = Path(file_name).with_suffix('.bin')
-                        encode_script(file_name, output_file)
-                        with open(output_file, 'rb') as f:
-                            content = f.read().decode('utf-8', errors='ignore')
-                        results.append(content)
-                    return results
-
-                self.worker_thread = WorkerThread(encode)
-                self.worker_thread.signals.result.connect(self.handle_encode_result)
-                self.worker_thread.signals.finished.connect(self.handle_encode_finished)
-                self.worker_thread.signals.error.connect(self.handle_encode_error)
-                self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error encoding script: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def handle_encode_result(self, result):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        if result:
-            combined_content = "\n".join(result)
-            self.text_edit.setPlainText(combined_content)
-            self.text_edit.setVisible(True)
-            self.copy_path_button.setVisible(True)
-            self.close_button.setVisible(True)
-            QMessageBox.information(self, "Success", "Script encoding completed successfully!")
-
-    def handle_encode_finished(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("Encode finished")
-        toast("Encoding Finished", "The encoding process has been completed successfully.")
-
-    def handle_encode_error(self, error):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        e, traceback_str = error
-        logging.error(f"Encode error: {e}\n{traceback_str}")
-        self.show_error_message(f"An error occurred: {e}")
-
-    def decode_gs4_script(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Decoding GS4 script")
-            options = QFileDialog.Option.ReadOnly
-            file_names, _ = QFileDialog.getOpenFileNames(self, "Open File", "", "Script Files (*.user.2.*)", options=options)
-            if file_names:
-                logging.info(f"Selected files: {file_names}")
-
-                def decode():
-                    from req.AJTTools.plugins.script import AA4Script
-                    results = []
-                    for file_name in file_names:
-                        file_path = Path(file_name)
-                        script = AA4Script(file_path)
-                        output_file = file_path.with_suffix('.txt')
-                        script.write_txt(output_file)
-                        with open(output_file, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        results.append(content)
-                    return results
-
-                self.worker_thread = WorkerThread(decode)
-                self.worker_thread.signals.result.connect(self.handle_decode_result)
-                self.worker_thread.signals.finished.connect(self.handle_decode_finished)
-                self.worker_thread.signals.error.connect(self.handle_decode_error)
-                self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error decoding script: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def encode_gs4_script(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Encoding GS4 script")
-            options = QFileDialog.Option.ReadOnly
-            file_names, _ = QFileDialog.getOpenFileNames(self, "Open File", "", "Script Files (*.txt)", options=options)
-            if file_names:
-                logging.info(f"Selected files: {file_names}")
-
-                def encode():
-                    from req.AJTTools.plugins.script import AA4Script
-                    results = []
-                    for file_name in file_names:
-                        file_path = Path(file_name)
-                        script = AA4Script(file_path)
-                        output_file = file_path.with_suffix('.user.2')
-                        script.write_user2(output_file)
-                        with open(output_file, 'rb') as f:
-                            content = f.read().decode('utf-8', errors='ignore')
-                        results.append(content)
-                    return results
-
-                self.worker_thread = WorkerThread(encode)
-                self.worker_thread.signals.result.connect(self.handle_encode_result)
-                self.worker_thread.signals.finished.connect(self.handle_encode_finished)
-                self.worker_thread.signals.error.connect(self.handle_encode_error)
-                self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error encoding script: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def create_pak(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Creating PAK file")
-            options = QFileDialog.Option.ShowDirsOnly
-            dir_name = QFileDialog.getExistingDirectory(self, "Select Directory to Create PAK", options=options)
-            if dir_name:
-                logging.info(f"Selected directory to create PAK: {dir_name}")
-                output_file, _ = QFileDialog.getSaveFileName(self, "Save PAK File", "", "PAK Files (*.pak)")
-                if output_file:
-                    logging.info(f"Selected output PAK file: {output_file}")
-
-                    def build_pak(dir_path, pak_path):
-                        from req.AJTTools.plugins.pak.src.Pak import build_pak_from_dir
-                        build_pak_from_dir(dir_path, pak_path)
-
-                    self.worker_thread = WorkerThread(build_pak, Path(dir_name), Path(output_file))
-                    self.worker_thread.signals.finished.connect(self.handle_create_pak_finished)
-                    self.worker_thread.signals.error.connect(self.handle_create_pak_error)
-                    self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error creating PAK file: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def handle_create_pak_finished(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("PAK creation finished")
-        toast("PAK Creation Finished", "The PAK file has been created successfully.")
-
-    def handle_create_pak_error(self, error):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        e, traceback_str = error
-        logging.error(f"PAK creation error: {e}\n{traceback_str}")
-        self.show_error_message(f"An error occurred: {e}")
-
-    def copy_path(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Copying path to clipboard")
-            clipboard = QApplication.clipboard()
-            clipboard.setText(self.text_edit.toPlainText().split('\n')[0])
-            QMessageBox.information(self, "Success", "Path copied to clipboard!")
-        except Exception as e:
-            logging.error(f"Error copying path to clipboard: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def close_text_edit(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("Closing text edit")
-        self.text_edit.setVisible(False)
-        self.copy_path_button.setVisible(False)
-        self.close_button.setVisible(False)
-        self.file_list_widget.setVisible(False)
-        self.stacked_widget.setCurrentIndex(0)
-
-    def extract_mes_all_bin(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Extracting mes_all.bin")
-            options = QFileDialog.Option.ReadOnly
-            file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", "BIN Files (*.bin)", options=options)
-            if file_name:
-                logging.info(f"Selected file: {file_name}")
-
-                file_dir = os.path.dirname(file_name)
-
-                argc = 3
-                argv = (ctypes.c_char_p * argc)()
-                argv[0] = b"extract_mes_all_bin"
-                argv[1] = file_name.encode('utf-8')
-                argv[2] = file_dir.encode('utf-8')
-
-                self.worker_thread = WorkerThread(lambda: self.extract_mes_all_bin.main(argc, argv))
-                self.worker_thread.signals.finished.connect(self.handle_extract_finished)
-                self.worker_thread.signals.error.connect(self.handle_extract_error)
-                self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error extracting mes_all.bin: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def handle_extract_finished(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("Extract finished")
-        toast("Extract Finished", "The extraction process has been completed successfully.")
-
-    def handle_extract_error(self, error):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        e, traceback_str = error
-        logging.error(f"Extract error: {e}\n{traceback_str}")
-        self.show_error_message(f"An error occurred: {e}")
-
-    def convert_text_messages(self):
-        try:
-            logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-            logging.info("Converting text messages")
-            options = QFileDialog.Option.ShowDirsOnly
-            dir_name = QFileDialog.getExistingDirectory(self, "Select Directory with Scripts", options=options)
-            if dir_name:
-                logging.info(f"Selected directory: {dir_name}")
-
-                game_dialog = GameSelectionDialog(self)
-                if game_dialog.exec() == QDialog.DialogCode.Accepted:
-                    selected_game = game_dialog.selected_game
-                    logging.info(f"Selected game: {selected_game}")
-
-                    argc = 3
-                    argv = (ctypes.c_char_p * argc)()
-                    argv[0] = b"convert_text_messages"
-                    argv[1] = dir_name.encode('utf-8')
-                    argv[2] = str(selected_game).encode('utf-8')
-
-                    self.worker_thread = WorkerThread(lambda: self.convert_text_messages.main(argc, argv))
-                    self.worker_thread.signals.finished.connect(self.handle_convert_finished)
-                    self.worker_thread.signals.error.connect(self.handle_convert_error)
-                    self.worker_thread.start()
-        except Exception as e:
-            logging.error(f"Error converting text messages: {e}")
-            self.show_error_message(f"An error occurred: {e}")
-            traceback.print_exc()
-
-    def handle_convert_finished(self):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        logging.info("Convert finished")
-        toast("Convert Finished", "The conversion process has been completed successfully.")
-
-    def handle_convert_error(self, error):
-        logging.info(f"Executing: {inspect.currentframe().f_lineno}")
-        e, traceback_str = error
-        logging.error(f"Convert error: {e}\n{traceback_str}")
-        self.show_error_message(f"An error occurred: {e}")
-
-    def convert_tex_to_image(self):
-        options = QFileDialog.Option.ReadOnly
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Open TEX Files", "", "TEX Files (*.tex.*)", options=options)
-        if file_names:
-            format_dialog = QDialog(self)
-            format_dialog.setWindowTitle("Select Output Format")
-            layout = QVBoxLayout()
-
-            format_label = QLabel("Select Format:")
-            layout.addWidget(format_label)
-
-            format_combo = QComboBox()
-            format_combo.addItems(["PNG", "DDS"])
-            layout.addWidget(format_combo)
-
-            ok_button = QPushButton("OK")
-            ok_button.clicked.connect(format_dialog.accept)
-            layout.addWidget(ok_button)
-
-            format_dialog.setLayout(layout)
-
-            if format_dialog.exec() == QDialog.DialogCode.Accepted:
-                selected_format = format_combo.currentText().lower()
-                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-                if output_dir:
-                    self.worker_thread = WorkerThread(self._convert_tex_to_image_worker, file_names, selected_format, output_dir)
-                    self.worker_thread.signals.result.connect(self.handle_convert_tex_result)
-                    self.worker_thread.signals.finished.connect(self.handle_convert_finished)
-                    self.worker_thread.signals.error.connect(self.handle_convert_error)
-                    self.worker_thread.start()
-
-    def _convert_tex_to_image_worker(self, file_names, selected_format, output_dir):
-        from req.AJTTools.plugins.tex import Tex
-        results = []
-        for file_name in file_names:
-            tex = Tex(file_name)
-            output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(file_name))[0]}.{selected_format}")
-            tex.export_file(output_file)
-            results.append(output_file)
-        return results
-
-    def handle_convert_tex_result(self, result):
-        if result:
-            if len(result) == 1:
-                self.display_single_file(result[0])
-            else:
-                self.display_multiple_files(result)
-
     def display_single_file(self, file_path):
-        if file_path.endswith('.png') or file_path.endswith('.dds'):
-            pixmap = QPixmap(file_path)
-            self.image_label.setPixmap(pixmap)
+        self._show_viewer()
+        if file_path.endswith(('.png', '.dds')):
+            self.image_label.setPixmap(QPixmap(file_path))
             self.scale_image_to_label()
             self.stacked_widget.setCurrentWidget(self.image_label)
         else:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            self.text_edit.setPlainText(content)
+            self.text_edit.setPlainText(Path(file_path).read_text(encoding='utf-8'))
             self.stacked_widget.setCurrentWidget(self.text_edit)
-
-        self.text_edit.setVisible(True)
-        self.copy_path_button.setVisible(True)
-        self.close_button.setVisible(True)
 
     def display_multiple_files(self, file_paths):
         self.file_list_widget.clear()
@@ -939,113 +371,306 @@ class MainWindow(QMainWindow):
     def display_file_content(self, item):
         file_path = item.text()
         if file_path.endswith('.png'):
-            pixmap = QPixmap(file_path)
-            self.image_label.setPixmap(pixmap)
+            self.image_label.setPixmap(QPixmap(file_path))
             self.scale_image_to_label()
             self.stacked_widget.setCurrentWidget(self.image_label)
         else:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            self.text_edit.setPlainText(content)
+            self.text_edit.setPlainText(Path(file_path).read_text(encoding='utf-8'))
             self.stacked_widget.setCurrentWidget(self.text_edit)
 
-    def convert_image_to_tex(self):
-        options = QFileDialog.Option.ReadOnly
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Image Files", "", "Image Files (*.png *.dds)", options=options)
-        if file_names:
-            output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-            if output_dir:
-                self.worker_thread = WorkerThread(self._convert_image_to_tex_worker, file_names, output_dir)
-                self.worker_thread.signals.finished.connect(self.handle_convert_finished)
-                self.worker_thread.signals.error.connect(self.handle_convert_error)
-                self.worker_thread.start()
+    def copy_path(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.text_edit.toPlainText().split('\n')[0])
+        notify("Copied", "Path copied to clipboard!")
 
-    def _convert_image_to_tex_worker(self, file_names, output_dir):
-        from req.AJTTools.plugins.tex import Tex
-        results = []
-        for file_name in file_names:
-            base_name = os.path.basename(file_name)
-            tex_name = base_name.replace('.png', '.tex.35').replace('.dds', '.tex.35')
-            output_file = os.path.join(output_dir, tex_name)
-            tex = Tex(output_file)
-            tex.import_file(file_name)
-            tex.save(output_file)
-            results.append(output_file)
-        return results
+    def close_text_edit(self):
+        self._hide_viewer()
+        self.stacked_widget.setCurrentIndex(0)
+
+    # -- Script conversion (AJTTools: txt <-> user2) -----------------------
+
+    def decode_gs56_ajt(self):
+        file_names = self._select_files("Open File", "Script Files (*.user.2.*)")
+        if not file_names:
+            return
+        logging.info(f"GS56 decode (AJTTools): {file_names}")
+        self._start_worker(
+            _decode_gs56_ajt, file_names,
+            on_result=self._show_results,
+            on_done=("Decoding Finished", "GS56 scripts have been decoded to txt via AJTTools."),
+        )
+
+    def encode_gs56_ajt(self):
+        file_names = self._select_files("Open File", "Script Files (*.txt)")
+        if not file_names:
+            return
+        logging.info(f"GS56 encode (AJTTools): {file_names}")
+        self._start_worker(
+            _encode_gs56_ajt, file_names,
+            on_result=self._show_results,
+            on_done=("Encoding Finished", "GS56 scripts have been encoded to user2 via AJTTools."),
+        )
+
+    # -- Script conversion (AJT56script: json <-> bin) ---------------------
+
+    def decode_gs56_json(self):
+        file_names = self._select_files("Open File", "Script Files (*.user.2.*)")
+        if not file_names:
+            return
+        logging.info(f"GS56 decode (JSON): {file_names}")
+        self._start_worker(
+            _decode_gs56_json, file_names,
+            on_result=self._show_results,
+            on_done=("Decoding Finished", "The decoding process has been completed successfully."),
+        )
+
+    def encode_gs56_json(self):
+        file_names = self._select_files("Open File", "Script Files (*.json *.bin)")
+        if not file_names:
+            return
+        logging.info(f"GS56 encode (JSON): {file_names}")
+        self._start_worker(
+            _encode_gs56_json, file_names,
+            on_result=self._show_results,
+            on_done=("Encoding Finished", "The encoding process has been completed successfully."),
+        )
+
+    # -- Script conversion (GS4) -------------------------------------------
+
+    def decode_gs4(self):
+        file_names = self._select_files("Open File", "Script Files (*.user.2.*)")
+        if not file_names:
+            return
+        logging.info(f"GS4 decode (AJTTools): {file_names}")
+        self._start_worker(
+            _decode_gs4_ajt, file_names,
+            on_result=self._show_results,
+            on_done=("Decoding Finished", "GS4 scripts have been decoded to txt via AJTTools."),
+        )
+
+    def encode_gs4(self):
+        file_names = self._select_files("Open File", "Script Files (*.txt)")
+        if not file_names:
+            return
+        logging.info(f"GS4 encode (AJTTools): {file_names}")
+        self._start_worker(
+            _encode_gs4_ajt, file_names,
+            on_result=self._show_results,
+            on_done=("Encoding Finished", "GS4 scripts have been encoded to user2 via AJTTools."),
+        )
+
+    # -- DS tools (DLL helpers) --------------------------------------------
+
+    def _extract_mes_all_bin(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Open File", "", "BIN Files (*.bin)", options=QFileDialog.Option.ReadOnly)
+        if not file_name:
+            return
+        logging.info(f"Extracting mes_all.bin: {file_name}")
+
+        file_dir = os.path.dirname(file_name)
+        argc = 3
+        argv = (ctypes.c_char_p * argc)()
+        argv[0] = b"extract_mes_all_bin"
+        argv[1] = file_name.encode('utf-8')
+        argv[2] = file_dir.encode('utf-8')
+
+        self._start_worker(
+            lambda: self.extract_mes_dll.main(argc, argv),
+            on_done=("Extract Finished", "The extraction process has been completed successfully."),
+        )
+
+    def _convert_text_messages(self):
+        options = QFileDialog.Option.ShowDirsOnly
+        dir_name = QFileDialog.getExistingDirectory(self, "Select Directory with Scripts", options=options)
+        if not dir_name:
+            return
+
+        game_dialog = GameSelectionDialog(self)
+        if game_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        logging.info(f"Converting text messages: {dir_name} (game {game_dialog.selected_game})")
+
+        argc = 3
+        argv = (ctypes.c_char_p * argc)()
+        argv[0] = b"convert_text_messages"
+        argv[1] = dir_name.encode('utf-8')
+        argv[2] = str(game_dialog.selected_game).encode('utf-8')
+
+        self._start_worker(
+            lambda: self.convert_text_dll.main(argc, argv),
+            on_done=("Convert Finished", "The conversion process has been completed successfully."),
+        )
+
+    # -- PAK ---------------------------------------------------------------
+
+    def unpack_pak(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Open File", "", "PAK Files (*.pak)", options=QFileDialog.Option.ReadOnly)
+        if not file_name:
+            return
+        logging.info(f"Unpacking PAK: {file_name}")
+        self._unpack_with_platform(Path(file_name))
+
+    def _unpack_with_platform(self, file_path):
+        platform_dialog = PlatformDialog(self)
+        if platform_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not output_dir:
+            return
+
+        list_mapping = {
+            "Steam (PC)": "steam.list",
+            "Nintendo Switch": "nsw.list",
+            "PlayStation 4": "ps4.list",
+        }
+        list_path = BASE_DIR / 'req' / 'list_path' / list_mapping[platform_dialog.selected_platform]
+
+        def worker():
+            from req.AJTTools.plugins.pak.src.Pak import REPak
+            pak = REPak(file_path)
+            pak.unpack(Path(output_dir), list_path)
+
+        self._start_worker(
+            worker,
+            on_done=("Unpacking Finished", "The unpacking process has been completed successfully."),
+        )
+
+    def create_pak(self):
+        options = QFileDialog.Option.ShowDirsOnly
+        dir_name = QFileDialog.getExistingDirectory(self, "Select Directory to Create PAK", options=options)
+        if not dir_name:
+            return
+
+        output_file, _ = QFileDialog.getSaveFileName(self, "Save PAK File", "", "PAK Files (*.pak)")
+        if not output_file:
+            return
+        logging.info(f"Creating PAK from {dir_name} -> {output_file}")
+
+        self._start_worker(
+            _build_pak, Path(dir_name), Path(output_file),
+            on_done=("PAK Creation Finished", "The PAK file has been created successfully."),
+        )
+
+    # -- TEX ---------------------------------------------------------------
+
+    def convert_single_tex(self):
+        dialog = SingleTexConvertDialog(self)
+        dialog.exec()
+
+    def convert_multiple_tex(self):
+        dialog = MultipleTexConvertDialog(self)
+        dialog.exec()
+
+    def convert_tex_to_image(self):
+        file_names = self._select_files("Open TEX Files", "TEX Files (*.tex.*)")
+        if not file_names:
+            return
+
+        format_dialog = FormatSelectDialog(self)
+        if format_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not output_dir:
+            return
+        logging.info(f"Converting TEX to {format_dialog.selected_format}: {file_names}")
+
+        self._start_worker(
+            _convert_tex_to_image, file_names, format_dialog.selected_format, output_dir,
+            on_result=self._handle_convert_tex_result,
+            on_done=("Convert Finished", "The conversion process has been completed successfully."),
+        )
+
+    def _handle_convert_tex_result(self, result):
+        if not result:
+            return
+        if len(result) == 1:
+            self.display_single_file(result[0])
+        else:
+            self.display_multiple_files(result)
+
+    def convert_image_to_tex(self):
+        file_names = self._select_files("Open Image Files", "Image Files (*.png *.dds)")
+        if not file_names:
+            return
+
+        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not output_dir:
+            return
+        logging.info(f"Converting images to TEX: {file_names}")
+
+        self._start_worker(
+            _convert_image_to_tex, file_names, output_dir,
+            on_done=("Convert Finished", "The conversion process has been completed successfully."),
+        )
+
+    # -- Fonts -------------------------------------------------------------
 
     def convert_oft_to_otf(self):
-        options = QFileDialog.Option.ReadOnly
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Select OFT.1 Font Files", "", "Font Files (*.oft.*)", options=options)
-        if file_names:
-            if len(file_names) == 1:
-                output_file, _ = QFileDialog.getSaveFileName(self, "Save OTF Font File", "", "OpenType Fonts (*.otf)")
-                if output_file:
-                    self.convert_fonts(file_names, output_file)
-            else:
-                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-                if output_dir:
-                    self.convert_fonts(file_names, output_dir)
+        file_names = self._select_files("Select OFT.1 Font Files", "Font Files (*.oft.*)")
+        if not file_names:
+            return
+
+        if len(file_names) == 1:
+            output, _ = QFileDialog.getSaveFileName(self, "Save OTF Font File", "", "OpenType Fonts (*.otf)")
+            if not output:
+                return
+        else:
+            output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            if not output_dir:
+                return
+            output = output_dir
+
+        self._start_worker(
+            _convert_fonts_to_otf, file_names, output,
+            on_done=("Font Conversion Finished", "Font conversion completed successfully."),
+        )
 
     def convert_otf_to_oft(self):
-        options = QFileDialog.Option.ReadOnly
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Select OTF Font Files", "", "OpenType Fonts (*.otf)", options=options)
-        if file_names:
-            if len(file_names) == 1:
-                output_file, _ = QFileDialog.getSaveFileName(self, "Save OFT.1 Font File", "", "Font Files (*.oft.1)")
-                if output_file:
-                    self.convert_fonts_back(file_names, output_file)
-            else:
-                output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-                if output_dir:
-                    self.convert_fonts_back(file_names, output_dir)
+        file_names = self._select_files("Select OTF Font Files", "OpenType Fonts (*.otf)")
+        if not file_names:
+            return
 
-    def convert_fonts(self, file_names, output):
-        try:
-            from req.AJTTools.plugins.font import REFont
-            if isinstance(output, str):  # Один файл
-                font = REFont(file_names[0])
-                font.export_file(output)
-                QMessageBox.information(self, "Success", "Font conversion completed successfully!")
-            else:  # Несколько файлов
-                for file_name in file_names:
-                    font = REFont(file_name)
-                    base_name = os.path.basename(file_name).replace('.oft.', '.otf')
-                    output_file = os.path.join(output, base_name)
-                    font.export_file(output_file)
-                QMessageBox.information(self, "Success", "All font conversions completed successfully!")
-        except Exception as e:
-            self.show_error_message(f"An error occurred: {e}")
+        if len(file_names) == 1:
+            output, _ = QFileDialog.getSaveFileName(self, "Save OFT.1 Font File", "", "Font Files (*.oft.1)")
+            if not output:
+                return
+        else:
+            output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            if not output_dir:
+                return
+            output = output_dir
 
-    def convert_fonts_back(self, file_names, output):
-        try:
-            from req.AJTTools.plugins.font import REFont # Импортируем обработчик шрифтов
-            if isinstance(output, str):  # Один файл
-                font = REFont(output)  # Создаем экземпляр REFont с пустым именем
-                font.import_file(file_names[0])
-                font.save(output)
-                QMessageBox.information(self, "Success", "Font conversion completed successfully!")
-            else:  # Несколько файлов
-                for file_name in file_names:
-                    base_name = os.path.basename(file_name).replace('.otf', '.oft.1')
-                    output_file = os.path.join(output, base_name)
-                    font = REFont(output_file)  # Создаем экземпляр REFont с именем выходного файла
-                    font.import_file(file_name)
-                    font.save(output_file)
-                QMessageBox.information(self, "Success", "All font conversions completed successfully!")
-        except Exception as e:
-            self.show_error_message(f"An error occurred: {e}")
+        self._start_worker(
+            _convert_fonts_to_oft, file_names, output,
+            on_done=("Font Conversion Finished", "Font conversion completed successfully."),
+        )
+
+
+def _load_dll(dll_name):
+    dll_path = BASE_DIR / 'req' / 'DS' / dll_name
+    dll = ctypes.CDLL(str(dll_path))
+    dll.main.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+    dll.main.restype = ctypes.c_int
+    return dll
+
 
 def set_taskbar_icon(icon_path):
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"mycompany.myproduct.subproduct.{icon_path}")
 
+
 def main():
-    logging.info(f"Executing: {inspect.currentframe().f_lineno}")
+    setup_logging()
     logging.info("Starting application")
     app = QApplication(sys.argv)
     set_taskbar_icon('icon.png')
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == '__main__':
     main()
